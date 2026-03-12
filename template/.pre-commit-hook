@@ -1,0 +1,19 @@
+#!/bin/bash
+# Pre-commit hook: scan staged changes for secrets using gitleaks
+# Installed by init-claude
+
+if ! command -v gitleaks &> /dev/null; then
+  echo "⚠️  gitleaks not installed — skipping secret scan"
+  echo "   Install: brew install gitleaks"
+  exit 0
+fi
+
+gitleaks protect --staged --no-banner
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "❌ Secrets detected in staged files. Commit blocked."
+  echo ""
+  echo "If this is a false positive, add to .gitleaksignore:"
+  echo "  echo '<fingerprint>' >> .gitleaksignore"
+  exit 1
+fi

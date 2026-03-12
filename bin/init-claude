@@ -1,0 +1,46 @@
+#!/bin/bash
+# init-claude — scaffold .claude/ in the current project
+# Usage: cd your-project && init-claude
+
+TEMPLATE="$HOME/.claude-template"
+
+if [ ! -d "$TEMPLATE" ]; then
+  echo "❌ Template not found at $TEMPLATE"
+  echo "   Run the setup first: cp -r claude-setup/.claude-template ~/"
+  exit 1
+fi
+
+if [ -d ".claude" ]; then
+  echo "⚠️  .claude/ already exists. Use sync-claude to update."
+  exit 1
+fi
+
+cp -r "$TEMPLATE" .claude
+
+# Add project-root .gitignore if none exists
+if [ ! -f ".gitignore" ]; then
+  cp "$TEMPLATE/.project-gitignore" .gitignore
+  echo "✅ .gitignore added (env, secrets, credentials, cloud configs)"
+else
+  echo "ℹ️  .gitignore already exists — skipped. Review it to ensure .env* is ignored."
+fi
+
+# Install gitleaks pre-commit hook if this is a git repo
+if [ -d ".git" ]; then
+  cp "$TEMPLATE/.pre-commit-hook" .git/hooks/pre-commit
+  chmod +x .git/hooks/pre-commit
+  echo "✅ Pre-commit hook installed (gitleaks secret scanning)"
+else
+  echo "ℹ️  Not a git repo — skipping pre-commit hook. Run 'git init' first, then re-run init-claude."
+fi
+
+# Clean up template-only files that shouldn't be in .claude/
+rm -f .claude/.project-gitignore
+rm -f .claude/.pre-commit-hook
+
+echo "✅ .claude/ scaffolded"
+echo ""
+echo "Next steps:"
+echo "  1. Edit .claude/CLAUDE.md — fill in your tech stack and project structure"
+echo "  2. Edit .claude/settings.local.json — add your allowed commands"
+echo "  3. Commit .claude/ (CLAUDE.local.md and settings.local.json are gitignored)"

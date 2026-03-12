@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+    ],
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | bash)"
+    ]
+  }
+}
