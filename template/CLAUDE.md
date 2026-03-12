@@ -1,54 +1,27 @@
 # Project Instructions
 
+<!-- ⚠️  THIS FILE IS AUTO-POPULATED after the first planning session.
+     When you run plan mode for the first time, Claude will fill in
+     Tech Stack, Commands, Project Structure, and Rules based on the plan.
+     Review and adjust as needed. -->
+
 ## Session Start
 Before making any changes, run the full test suite to orient yourself on project scope and current state. Do not proceed if tests are failing unless the task is specifically to fix them.
 
-<!-- Uncomment and fill in your test commands -->
-<!-- - Backend: `uv run pytest -x` -->
-<!-- - Frontend: `pnpm test` -->
-<!-- - Run both if the task could touch either side. -->
-
 ## Tech Stack
-
-<!-- Replace with your actual stack. Delete sections that don't apply. -->
-- Language: <!-- e.g. Python 3.12, TypeScript 5.x -->
-- Framework: <!-- e.g. FastAPI, Next.js, Django -->
-- Database: <!-- e.g. PostgreSQL + SQLAlchemy, MongoDB + Mongoose -->
-- Frontend: <!-- e.g. React + TypeScript (strict mode), Vue 3 -->
-- Infra: <!-- e.g. Docker, AWS ECS, Vercel -->
-- Package manager: <!-- e.g. pnpm (frontend), uv (backend) -->
+<!-- Auto-populated from first plan mode session -->
 
 ## Commands
-<!-- Fill in your actual build/dev/test/lint commands -->
-- **Dev**: <!-- e.g. `pnpm dev` (port 3000) -->
-- **Build**: <!-- e.g. `pnpm build` -->
-- **Test**: <!-- e.g. `uv run pytest -x` / `pnpm test` -->
-- **Lint**: <!-- e.g. `ruff check` / `eslint .` -->
-- **Type check**: <!-- e.g. `mypy --strict` / `tsc --noEmit` -->
-- **Migrations**: <!-- e.g. `alembic upgrade head` -->
+<!-- Auto-populated from first plan mode session -->
 
 ## Project Structure
-<!-- Map your actual repo layout -->
-<!--
-- `/src/api` — route handlers (keep thin, delegate to services)
-- `/src/services` — business logic
-- `/src/models` — ORM models
-- `/src/schemas` — request/response schemas
-- `/tests` — mirrors `/src` structure
-- `/migrations` — database migrations
-- `/tasks` — planning and tracking docs
--->
+<!-- Auto-populated from first plan mode session -->
 
 ## Rules
-<!-- Project-specific rules. Keep only what's unique to THIS project. -->
+<!-- Auto-populated from first plan mode session. Keep only what's unique to THIS project. -->
 <!-- Universal rules (TDD, security, code style) are in global ~/.claude/rules/ -->
-- Never modify migration files after they've been merged
-- All API endpoints need input validation via schema layer
-- No wildcard imports
-- Always use timezone-aware datetimes (UTC internally)
 
 ## Definition of Done
-<!-- Customize to your CI/tooling -->
 - Tests written before implementation (red/green/refactor cycle)
 - Types pass
 - Tests pass
@@ -59,10 +32,6 @@ Before making any changes, run the full test suite to orient yourself on project
 
 ## Common Gotchas
 <!-- Add project-specific landmines here as you discover them -->
-<!--
-1. Example: Stripe webhooks require raw body, not JSON parsed
-2. Example: Production read replicas have 5-min lag
--->
 
 ## Core Principles
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.

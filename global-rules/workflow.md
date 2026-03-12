@@ -6,6 +6,21 @@
 - Use plan mode for verification steps, not just building
 - Write detailed specs upfront to reduce ambiguity
 
+## CLAUDE.md Auto-Population
+
+After the **first planning session** in a new project, check if `.claude/CLAUDE.md` has empty placeholder sections (Tech Stack, Commands, Project Structure, Rules). If it does:
+
+1. **Populate** the empty sections based on decisions made during planning:
+   - **Tech Stack** — language, framework, database, frontend, infra, package managers
+   - **Commands** — dev, build, test, lint, type check, migrations (whatever applies)
+   - **Project Structure** — directory layout with one-line descriptions
+   - **Rules** — project-specific rules only (not duplicating global rules)
+   - **Session Start** — the actual test commands to run
+2. **Show the user** what was written and confirm it's correct
+3. **Commit** the populated CLAUDE.md as a save point
+
+This only happens once per project. After that, CLAUDE.md is a living document — update it when the project evolves (new dependencies, changed structure, new gotchas).
+
 ## Collaboration Modes
 
 Choose the mode based on task clarity. Default to pair mode when uncertain.
