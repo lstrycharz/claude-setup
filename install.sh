@@ -56,7 +56,58 @@ if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
   fi
 fi
 
-# 5. Check for gitleaks
+# 5. Hooks → ~/.claude/hooks/
+echo "→ Installing hooks to ~/.claude/hooks/"
+mkdir -p ~/.claude/hooks
+cp "$SCRIPT_DIR/hooks/"*.mjs ~/.claude/hooks/
+chmod +x ~/.claude/hooks/*.mjs
+
+# 6. Commands → ~/.claude/commands/
+echo "→ Installing commands to ~/.claude/commands/"
+mkdir -p ~/.claude/commands
+cp "$SCRIPT_DIR/commands/"*.md ~/.claude/commands/
+
+# 7. Agents → ~/.claude/agents/
+echo "→ Installing agents to ~/.claude/agents/"
+mkdir -p ~/.claude/agents
+for agent in "$SCRIPT_DIR/agents/"*.md; do
+  cp "$agent" ~/.claude/agents/
+done
+
+# 8. Configure hooks in ~/.claude/settings.json
+echo "→ Configuring hooks in ~/.claude/settings.json"
+mkdir -p ~/.claude/metrics
+node -e "
+const fs = require('fs');
+const path = require('path');
+const settingsPath = path.join(process.env.HOME, '.claude', 'settings.json');
+const hooksDir = path.join(process.env.HOME, '.claude', 'hooks');
+
+let settings = {};
+try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+
+settings.hooks = {
+  PreToolUse: [
+    {
+      matcher: 'Write|Edit',
+      hooks: [
+        { type: 'command', command: 'node ' + hooksDir + '/config-protection.mjs' },
+        { type: 'command', command: 'node ' + hooksDir + '/suggest-compact.mjs' }
+      ]
+    },
+    {
+      matcher: 'Bash',
+      hooks: [
+        { type: 'command', command: 'node ' + hooksDir + '/block-no-verify.mjs' }
+      ]
+    }
+  ]
+};
+
+fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+"
+
+# 9. Check for gitleaks
 if ! command -v gitleaks &> /dev/null; then
   echo ""
   echo "⚠️  gitleaks not installed. Secret scanning won't work without it."
@@ -75,6 +126,9 @@ echo ""
 echo "✅ Done! Your setup:"
 echo ""
 echo "   ~/.claude/rules/        → Global rules (auto-loaded in every project)"
+echo "   ~/.claude/hooks/        → Hooks (config-protection, block-no-verify, suggest-compact)"
+echo "   ~/.claude/commands/     → Slash commands (/code-review, /security-scan)"
+echo "   ~/.claude/agents/       → Subagents (code-reviewer, security-reviewer)"
 echo "   ~/.claude-template/     → Project template (used by init-claude)"
 echo "   ~/bin/init-claude       → Scaffold new projects"
 echo ""

@@ -1,6 +1,6 @@
 # Claude Code Setup
 
-Personal Claude Code configuration — global rules, project template, and tooling.
+Personal Claude Code configuration — global rules, hooks, commands, agents, project template, and tooling.
 
 ## What's Included
 
@@ -14,6 +14,16 @@ claude-setup/
 │   ├── security.md        # SSRF, auth, input validation, secrets
 │   └── frontend/
 │       └── react.md       # React component patterns
+├── hooks/                 # → ~/.claude/hooks/ (active protection)
+│   ├── config-protection.mjs  # Blocks edits to linter/formatter configs
+│   ├── block-no-verify.mjs    # Blocks --no-verify on git commands
+│   └── suggest-compact.mjs    # Suggests /compact after 50 tool calls
+├── commands/              # → ~/.claude/commands/ (slash commands)
+│   ├── code-review.md     # /code-review — review uncommitted changes
+│   └── security-scan.md   # /security-scan — OWASP Top 10 audit
+├── agents/                # → ~/.claude/agents/ (subagent definitions)
+│   ├── code-reviewer.md   # Fresh-context code review
+│   └── security-reviewer.md # Security vulnerability scanner
 ├── template/              # → ~/.claude-template/ (used by init-claude)
 │   ├── CLAUDE.md          # Project instructions (auto-populated from first plan)
 │   ├── CLAUDE.local.md    # Personal preferences (gitignored)
@@ -36,6 +46,9 @@ cd claude-setup
 
 This installs:
 - Global rules to `~/.claude/rules/`
+- Hooks to `~/.claude/hooks/` + configures them in `~/.claude/settings.json`
+- Slash commands to `~/.claude/commands/`
+- Agents to `~/.claude/agents/`
 - Project template to `~/.claude-template/`
 - `init-claude` command to `~/bin/`
 - Prompts to install `gitleaks` for secret scanning
@@ -55,6 +68,25 @@ This creates:
 
 Then start Claude Code and enter plan mode. After the first planning session, Claude **auto-populates** `CLAUDE.md` with your tech stack, commands, project structure, and rules. No manual copy-paste needed.
 
+## Hooks
+
+Hooks run automatically on every Claude Code session. Configured globally in `~/.claude/settings.json`.
+
+| Hook | Trigger | What it does |
+|------|---------|-------------|
+| `config-protection` | Before Write/Edit | Blocks edits to linter/formatter configs (`.eslintrc`, `.prettierrc`, `biome.json`, `ruff.toml`, etc.). Forces Claude to fix the code, not weaken the rules. |
+| `block-no-verify` | Before Bash | Blocks `--no-verify` on git commands. Protects pre-commit hooks (gitleaks) from being bypassed. |
+| `suggest-compact` | Before Edit/Write | Counts tool calls per session. After 50, suggests running `/compact` to free context window. |
+
+## Slash Commands
+
+Available in any project after install.
+
+| Command | What it does |
+|---------|-------------|
+| `/code-review` | Reviews all uncommitted changes for bugs, security issues, performance problems, and style violations. Returns findings by severity with fix suggestions. |
+| `/security-scan` | Performs OWASP Top 10 audit: secrets detection, injection vulnerabilities, SSRF risks, auth/authz checks, dependency audit, and error handling leaks. |
+
 ## How It Works
 
 ```
@@ -67,7 +99,9 @@ New project
     │                        → you review and confirm
     │
     └─ Start building      → global rules (TDD, security, workflow) apply automatically
+                             → hooks protect against agent mistakes
                              → CLAUDE.md provides project-specific context every session
+                             → /code-review and /security-scan available on demand
 ```
 
 ## Security Layers
@@ -77,7 +111,10 @@ New project
 | `.gitignore` | Blocks `.env*`, `*.pem`, `*.key`, credentials, cloud configs from git | Passive |
 | `settings.json` | Blocks Claude from reading `.env*`, secrets, key files | Passive |
 | `security.md` (global rule) | Instructs Claude: no hardcoded secrets, validate URLs, sanitise input | Passive |
+| `config-protection` (hook) | Blocks Claude from weakening linter/formatter configs | Active |
+| `block-no-verify` (hook) | Blocks Claude from bypassing pre-commit hooks | Active |
 | gitleaks pre-commit hook | Scans every commit for API keys, tokens, passwords — blocks if found | Active |
+| `/security-scan` (command) | On-demand OWASP Top 10 audit of the full codebase | On demand |
 
 ## Updating
 
@@ -94,6 +131,9 @@ git pull
 | Layer | Location | Scope |
 |-------|----------|-------|
 | Global rules | `~/.claude/rules/` | Every project, automatically |
+| Hooks | `~/.claude/hooks/` | Every project, automatically |
+| Commands | `~/.claude/commands/` | Every project, on demand |
+| Agents | `~/.claude/agents/` | Every project, via commands or Agent tool |
 | Project config | `<project>/.claude/CLAUDE.md` | One project (auto-populated) |
 | Personal overrides | `<project>/.claude/CLAUDE.local.md` | One project, gitignored |
 | Secret scanning | `.git/hooks/pre-commit` | One project, per git repo |
