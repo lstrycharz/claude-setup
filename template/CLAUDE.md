@@ -6,7 +6,17 @@
      Review and adjust as needed. -->
 
 ## Session Start
-Before making any changes, run the full test suite to orient yourself on project scope and current state. Do not proceed if tests are failing unless the task is specifically to fix them.
+
+**Fresh project (no PROGRESS.md):**
+Run the full test suite to orient yourself on project scope and current state. Do not proceed if tests are failing unless the task is specifically to fix them.
+
+**Resuming work (PROGRESS.md exists):**
+1. Read `.claude/PROGRESS.md` for handoff context
+2. Run `git log --oneline -10` to see recent commits
+3. Run the full test suite — confirm current state is green
+4. Read `tasks/todo.md` and `tasks/lessons.md` if they exist
+5. Pick the highest-priority incomplete item from PROGRESS.md
+6. Begin work — do not re-implement anything marked as Completed
 
 ## Tech Stack
 <!-- Auto-populated from first plan mode session -->

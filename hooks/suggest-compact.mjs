@@ -35,11 +35,11 @@ try {
 
 if (count === THRESHOLD) {
   process.stderr.write(
-    `[suggest-compact] ${THRESHOLD} tool calls reached. Consider running /compact if you're transitioning between tasks.\n`
+    `[suggest-compact] ${THRESHOLD} tool calls reached. Update .claude/PROGRESS.md, then run /compact if transitioning between tasks.\n`
   );
 } else if (count > THRESHOLD && (count - THRESHOLD) % REMINDER_INTERVAL === 0) {
   process.stderr.write(
-    `[suggest-compact] ${count} tool calls. Good checkpoint for /compact if context feels stale.\n`
+    `[suggest-compact] ${count} tool calls. Update .claude/PROGRESS.md, then run /compact if context feels stale.\n`
   );
 }
 

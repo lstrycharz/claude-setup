@@ -65,6 +65,28 @@ Rules:
 - If a chunk breaks something, fix it before moving on — never stack broken chunks
 - Carry context forward between chunks but keep each one focused
 
+## Feature Acceptance Tracking
+
+For multi-session features or features with 3+ acceptance criteria, create a `tasks/acceptance.md` file:
+
+```
+# Feature: [name]
+
+## Acceptance Criteria
+- [ ] [Criterion 1] — status: not started
+- [ ] [Criterion 2] — status: not started
+- [ ] [Criterion 3] — status: not started
+
+## Notes
+<!-- Edge cases, decisions made, things tried and rejected -->
+```
+
+Rules:
+- Never remove or weaken acceptance criteria — only mark them complete
+- Each criterion must have a passing test before being checked off
+- Update `.claude/PROGRESS.md` when criteria are completed
+- If a criterion turns out to be wrong, discuss with the user before modifying
+
 ## Delegation Template
 
 When handing off a well-scoped task (delegation mode), structure the prompt:
@@ -108,15 +130,18 @@ When handing off a well-scoped task (delegation mode), structure the prompt:
 - Diff behavior between main and your changes when relevant
 - Ask yourself: "Would a staff engineer approve this?"
 - Run tests, check logs, demonstrate correctness
+- **For user-facing features**: verify the feature works end-to-end as a user would experience it (browser preview, CLI output, API response — whatever applies)
 
 **Review depth scales with scope:**
 
 | Scope | Required Verification |
 |-------|----------------------|
 | Single file fix | Diff review + affected tests pass |
-| Feature implementation | Spec review + full test pass + code review |
-| Multi-service change | Integration tests + manual QA + spec review |
+| Feature implementation | Spec review + full test pass + **E2E verification** + code review |
+| Multi-service change | Integration tests + **E2E verification** + manual QA + spec review |
 | Infrastructure / security | Pair mode only — never fully delegate |
+
+**E2E verification means:** run the app, hit the feature as a user would, confirm it works. For web apps, use browser preview or Playwright. For APIs, make actual HTTP requests. For CLIs, run the command. "Tests pass" and "it actually works" are different claims — verify both.
 
 ## Elegance Check
 - For non-trivial changes: pause and ask "is there a more elegant way?"
@@ -148,6 +173,33 @@ Never push through a failing approach hoping it will work out. The cost of stopp
 4. **Explain Changes**: High-level summary at each step
 5. **Document Results**: Add review section to `tasks/todo.md`
 6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+
+## Session Continuity
+
+Maintain `.claude/PROGRESS.md` as the cross-session handoff document. This file bridges context windows so each new session can resume without losing progress.
+
+**Update PROGRESS.md when:**
+- Completing a feature or significant chunk of work
+- Before running `/compact`
+- Before ending a session
+- When discovering a blocker or regression
+
+**Format:**
+- **Completed** — what's done, with commit SHAs or short descriptions
+- **In Progress** — current work, where you left off, relevant file paths
+- **Blocked** — what's stuck and what's needed
+- **Next Up** — prioritized queue of remaining work
+- **Known Issues** — bugs or regressions found during this session
+
+This is NOT a replacement for `tasks/todo.md` (which tracks granular steps within a session). PROGRESS.md is the high-level state that survives across sessions.
+
+**Session resume protocol (when PROGRESS.md exists):**
+1. Read `.claude/PROGRESS.md`
+2. Run `git log --oneline -10`
+3. Run the test suite
+4. Check `tasks/todo.md` and `tasks/lessons.md`
+5. Select highest-priority incomplete work from PROGRESS.md
+6. Start coding — do not redo completed work
 
 ## Commit Strategy
 
