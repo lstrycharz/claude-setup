@@ -74,8 +74,8 @@ for agent in "$SCRIPT_DIR/agents/"*.md; do
   cp "$agent" ~/.claude/agents/
 done
 
-# 8. Configure hooks in ~/.claude/settings.json
-echo "→ Configuring hooks in ~/.claude/settings.json"
+# 8. Configure hooks and env in ~/.claude/settings.json
+echo "→ Configuring hooks and env in ~/.claude/settings.json"
 mkdir -p ~/.claude/metrics
 node -e "
 const fs = require('fs');
@@ -85,6 +85,9 @@ const hooksDir = path.join(process.env.HOME, '.claude', 'hooks');
 
 let settings = {};
 try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+
+if (!settings.env) settings.env = {};
+settings.env.ENABLE_TOOL_SEARCH = 'true';
 
 settings.hooks = {
   PreToolUse: [
