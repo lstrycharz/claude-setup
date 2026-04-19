@@ -166,6 +166,8 @@ git pull
 
 That's it. The install script copies everything to the right places.
 
+**Safe to re-run anytime.** The installer merges instead of overwrites — your personal permissions, custom hooks, and other settings in `~/.claude/settings.json` are preserved. It only updates the hooks this repo manages.
+
 ## The Rules at a Glance
 
 | Rule file | What it tells Claude |
