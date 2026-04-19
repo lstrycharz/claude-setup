@@ -9,6 +9,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Installing Claude Code setup..."
 echo ""
 
+# Hard dependency check — Node is required for settings merging
+if ! command -v node &> /dev/null; then
+  echo "❌ Node.js is required but not installed."
+  echo ""
+  echo "   Install Node first, then re-run ./install.sh:"
+  echo "     macOS:   brew install node"
+  echo "     Ubuntu:  sudo apt-get install -y nodejs"
+  echo "     Other:   https://nodejs.org/"
+  exit 1
+fi
+
 # 1. Global rules → ~/.claude/rules/
 echo "→ Installing global rules to ~/.claude/rules/"
 mkdir -p ~/.claude/rules/frontend

@@ -137,7 +137,12 @@ claude-setup/
 │   └── .pre-commit-hook       # Scans commits for leaked secrets
 ├── bin/
 │   └── init-claude            # The command that sets up a new project
-└── install.sh                 # The command that sets up a new computer
+├── install.sh                 # The command that sets up a new computer
+├── uninstall.sh               # Safely removes everything this setup installed
+├── test.sh                    # Automated test suite (47 assertions, runs in sandbox)
+├── Dockerfile                 # Ubuntu container for cross-platform testing
+├── docker-test.sh             # Runs test.sh in the Docker container
+└── TESTING.md                 # Manual scenario checklist for coworker validation
 ```
 
 ## Security — How Your Secrets Stay Safe
@@ -167,6 +172,30 @@ git pull
 That's it. The install script copies everything to the right places.
 
 **Safe to re-run anytime.** The installer merges instead of overwrites — your personal permissions, custom hooks, and other settings in `~/.claude/settings.json` are preserved. It only updates the hooks this repo manages.
+
+## Testing
+
+Before sharing this with teammates, verify it works cleanly:
+
+```bash
+./test.sh          # 47 assertions in a sandboxed ~/ (30 sec)
+./docker-test.sh   # full install on a clean Ubuntu container (2 min, requires Docker)
+```
+
+See [TESTING.md](./TESTING.md) for a manual scenario checklist covering edge cases like existing custom rules, malformed settings, missing Node, and false positives on hooks.
+
+## Uninstalling
+
+```bash
+./uninstall.sh
+```
+
+Safely removes only what this repo installed:
+- Our hooks, commands, agents, and rules — your custom ones stay
+- Our entries from `~/.claude/settings.json` — your permissions, model, env, and other hooks are preserved
+- `~/bin/init-claude`
+
+It does **not** touch per-project `.claude/` directories or pre-commit hooks already installed in specific repos — remove those manually where needed.
 
 ## The Rules at a Glance
 
