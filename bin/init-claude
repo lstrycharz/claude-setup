@@ -6,12 +6,14 @@ TEMPLATE="$HOME/.claude-template"
 
 if [ ! -d "$TEMPLATE" ]; then
   echo "❌ Template not found at $TEMPLATE"
-  echo "   Run the setup first: cp -r claude-setup/.claude-template ~/"
+  echo "   Run the setup first: cd claude-setup && ./install.sh"
   exit 1
 fi
 
 if [ -d ".claude" ]; then
-  echo "⚠️  .claude/ already exists. Use sync-claude to update."
+  echo "⚠️  .claude/ already exists."
+  echo "   To re-scaffold: remove .claude/ first (back up CLAUDE.md and PROGRESS.md if needed)."
+  echo "   To update only global rules/hooks/commands/agents: re-run ./install.sh from claude-setup."
   exit 1
 fi
 

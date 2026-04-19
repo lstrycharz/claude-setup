@@ -89,23 +89,44 @@ try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
 if (!settings.env) settings.env = {};
 settings.env.ENABLE_TOOL_SEARCH = 'true';
 
-settings.hooks = {
-  PreToolUse: [
-    {
-      matcher: 'Write|Edit',
-      hooks: [
-        { type: 'command', command: 'node ' + hooksDir + '/config-protection.mjs' },
-        { type: 'command', command: 'node ' + hooksDir + '/suggest-compact.mjs' }
-      ]
-    },
-    {
-      matcher: 'Bash',
-      hooks: [
-        { type: 'command', command: 'node ' + hooksDir + '/block-no-verify.mjs' }
-      ]
-    }
+// Hook files this script manages — used to identify our entries during merge.
+// Matching by filename (not full path) so detection survives path changes.
+const OUR_HOOK_FILES = ['config-protection.mjs', 'suggest-compact.mjs', 'block-no-verify.mjs'];
+const isOurHook = (h) =>
+  h && h.type === 'command' && typeof h.command === 'string' &&
+  OUR_HOOK_FILES.some(name => h.command.includes(name));
+
+// Our desired PreToolUse configuration, keyed by matcher pattern.
+const OUR_MATCHERS = {
+  'Write|Edit': [
+    { type: 'command', command: 'node ' + hooksDir + '/config-protection.mjs' },
+    { type: 'command', command: 'node ' + hooksDir + '/suggest-compact.mjs' }
+  ],
+  'Bash': [
+    { type: 'command', command: 'node ' + hooksDir + '/block-no-verify.mjs' }
   ]
 };
+
+// Merge instead of replace: preserve other hook events (PostToolUse, Stop, etc.),
+// other PreToolUse matchers, and any user-added hooks on our matchers.
+// Idempotent: re-running the installer does not duplicate our hooks.
+if (!settings.hooks) settings.hooks = {};
+if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
+
+for (const [matcher, ourHooks] of Object.entries(OUR_MATCHERS)) {
+  const entry = settings.hooks.PreToolUse.find(e => e.matcher === matcher);
+  if (entry) {
+    // Strip our previously-installed hooks, keep any user-added hooks on this matcher.
+    entry.hooks = (entry.hooks || []).filter(h => !isOurHook(h)).concat(ourHooks);
+  } else {
+    settings.hooks.PreToolUse.push({ matcher, hooks: [...ourHooks] });
+  }
+}
+
+// Drop any matcher entries left with empty hook arrays (cleanup from prior versions).
+settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(
+  e => Array.isArray(e.hooks) && e.hooks.length > 0
+);
 
 fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 "
