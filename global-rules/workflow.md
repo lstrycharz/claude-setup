@@ -149,6 +149,26 @@ When handing off a well-scoped task (delegation mode), structure the prompt:
 - Skip this for simple, obvious fixes — don't over-engineer
 - Challenge your own work before presenting it
 
+## Surgical Changes
+
+Every line you change should trace directly back to the task. Don't scope-creep.
+
+**Do:**
+- Touch only the code required to complete the task
+- Match the existing style (naming, formatting, patterns) even if you'd write it differently in a greenfield project
+- Remove only the code that your changes made dead — nothing else
+- If you notice unrelated dead code or pre-existing issues, **mention them** (spawn a task, file a note) rather than silently fixing them
+
+**Don't:**
+- Reformat adjacent code, rewrite comments, or "clean up" imports that weren't part of the task
+- Refactor things that aren't broken
+- "Improve" variable names, function signatures, or file structure that the task didn't ask for
+- Delete pre-existing dead code "while you're in there"
+
+**The test:** after your change, `git diff` should read like a minimal, focused patch. Someone reviewing the diff should be able to tell exactly what task you were working on without being told.
+
+Skip this discipline only when the task is explicitly a refactor or cleanup — in which case the scope of that refactor should be defined upfront.
+
 ## Bug Fixing
 - When given a bug report: just fix it. Don't ask for hand-holding
 - Point at logs, errors, failing tests — then resolve them
