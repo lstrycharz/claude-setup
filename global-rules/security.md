@@ -202,7 +202,27 @@ Stack traces can leak file paths, library versions, and internal logic that must
 
 ---
 
-## 9. Pre-commit checklist
+## 9. MCP server safety (agent tooling)
+
+When you install an MCP server, **its tool descriptions get injected into the system prompt** — they are trusted text the model reads on every turn. A sloppy or malicious MCP can prompt-inject the agent before you've typed a word.
+
+**Before installing any MCP server:**
+- Read the server's tool descriptions. Anything that reads like instructions to the agent (rather than neutral capability descriptions) is a red flag
+- Verify the source — official Anthropic/vendor servers, well-known maintainers, or audited repos only
+- Never install an MCP from a paste, a screenshot, or a "try this cool one" message without inspection
+- Pin the version — same rule as any dependency
+
+**General MCP hygiene:**
+- Keep enabled servers under ~10. Each one's tool descriptions consume context and increase prompt-injection surface
+- Use `ENABLE_TOOL_SEARCH=true` so MCP tools are loaded only when needed, not at session start
+- If a server requests broad filesystem or network access, ask why before enabling
+- Audit `~/.claude.json` periodically and remove unused servers
+
+**Treat MCP installation like adding a code dependency — not like installing a browser extension.**
+
+---
+
+## 10. Pre-commit checklist
 
 Before marking any code task as complete, verify:
 
@@ -220,3 +240,4 @@ Before marking any code task as complete, verify:
 - [ ] No stack traces in API responses or user-facing output
 - [ ] No new dependencies added without verification and exact version pinning
 - [ ] User-generated content is sanitised before rendering
+- [ ] Any new MCP servers are vetted (source, version pinned, tool descriptions reviewed)

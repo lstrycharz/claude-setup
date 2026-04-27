@@ -6,6 +6,27 @@
 - Use plan mode for verification steps, not just building
 - Write detailed specs upfront to reduce ambiguity
 
+## Define Done Before Starting
+
+Before writing any code on a non-trivial task, write down what "done" looks like. This applies in **both pair and delegation modes** — not just delegation.
+
+Format:
+
+```
+## Done when
+- [ ] [Specific, observable outcome]
+- [ ] [Specific, observable outcome]
+- [ ] Tests pass
+- [ ] [Any other constraint that must hold]
+```
+
+Rules:
+- Each item must be **observable** — something you could check by running a command or hitting an endpoint, not "code is clean"
+- The list should fit in 5–7 items. If it's longer, the task is too big — break it down first
+- Once written, the list does not get weakened mid-task. If something turns out to be wrong, **discuss with the user** before changing it
+
+This is the single highest-leverage discipline against scope drift. Writing the done-condition before coding catches more wasted work than any prompt change.
+
 ## CLAUDE.md Auto-Population
 
 After the **first planning session** in a new project, check if `.claude/CLAUDE.md` has empty placeholder sections (Tech Stack, Commands, Project Structure, Rules). If it does:
@@ -124,6 +145,17 @@ When handing off a well-scoped task (delegation mode), structure the prompt:
 - Write rules for yourself that prevent the same mistake
 - Ruthlessly iterate on these lessons until mistake rate drops
 - Review lessons at session start for relevant project
+
+## Rules as a Ratchet
+
+Rules in `CLAUDE.md`, `tasks/lessons.md`, and project-level rule files are not a style guide — they're a pilot's checklist. Discipline:
+
+- **Earn each line.** Every rule must trace to a specific past failure or a hard external constraint (regulatory, security, tooling). If you can't name what went wrong that prompted this rule, it's noise — remove it.
+- **Add only after a failure.** Don't preemptively brainstorm rules. Wait for an actual mistake; then encode the rule that prevents it.
+- **Remove when redundant.** If the model now does the right thing without the rule, retire it. Stale rules dilute attention.
+- **Keep CLAUDE.md short.** Aim for under 60 useful lines. More rules = each rule matters less.
+
+Same discipline applies to hooks and tools: every component should have a named behaviour it delivers. If you can't say what failure mode it prevents, it shouldn't be there.
 
 ## Verification Before Done
 - Never mark a task complete without proving it works
