@@ -4,7 +4,13 @@
  * suggest-compact hook (PreToolUse → Edit/Write)
  *
  * Counts tool calls per session. After a threshold (default 50),
- * suggests running /compact to free up context window.
+ * suggests running /clear (preferred when transitioning tasks) or
+ * /compact (when staying mid-task) to free up context window.
+ *
+ * Why /clear over /compact when transitioning: /compact stuffs the
+ * conversation into a summary that becomes part of the next session's
+ * context. Sediment compounds. /clear returns to a known baseline,
+ * with assets (PROGRESS.md, todo.md, code itself) carrying state.
  *
  * Exit 0 always (never blocks).
  */
@@ -35,11 +41,11 @@ try {
 
 if (count === THRESHOLD) {
   process.stderr.write(
-    `[suggest-compact] ${THRESHOLD} tool calls reached. Update .claude/PROGRESS.md, then run /compact if transitioning between tasks.\n`
+    `[suggest-compact] ${THRESHOLD} tool calls reached. Update .claude/PROGRESS.md, then run /clear (preferred when transitioning tasks) or /compact (if staying mid-task).\n`
   );
 } else if (count > THRESHOLD && (count - THRESHOLD) % REMINDER_INTERVAL === 0) {
   process.stderr.write(
-    `[suggest-compact] ${count} tool calls. Update .claude/PROGRESS.md, then run /compact if context feels stale.\n`
+    `[suggest-compact] ${count} tool calls. Update .claude/PROGRESS.md, then /clear (transitioning) or /compact (mid-task).\n`
   );
 }
 

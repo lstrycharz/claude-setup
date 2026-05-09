@@ -86,6 +86,27 @@ Rules:
 - If a chunk breaks something, fix it before moving on — never stack broken chunks
 - Carry context forward between chunks but keep each one focused
 
+### Vertical Slices, Not Horizontal Layers
+
+When breaking a feature into chunks, the **first chunk must be a vertical slice** — a thin path through every layer the feature touches (schema → service → API → UI), not an entire layer.
+
+**Why:** AI defaults to coding horizontally — all schema changes first, then all services, then all UI. With that approach you don't get end-to-end feedback until the last layer lands. With a vertical slice, chunk 1 produces something you can run, test, and observe immediately.
+
+**Bad (horizontal):**
+- Chunk 1: all DB migrations
+- Chunk 2: all service methods
+- Chunk 3: all API routes
+- Chunk 4: all UI components
+
+**Good (vertical / tracer bullet):**
+- Chunk 1: one minimal slice end-to-end (one migration + one service method + one route + one UI element that calls it). Demoable.
+- Chunk 2: extend with the next behavior end-to-end
+- Chunk 3: edge cases and polish
+
+Tracer bullet test: after chunk 1, can you hit the feature as a user and see something happen? If no, the slice was too horizontal — break the chunking again.
+
+Skip this discipline only when the task is genuinely single-layer (e.g., a pure refactor, a database migration alone, a UI-only tweak).
+
 ## Feature Acceptance Tracking
 
 For multi-session features or features with 3+ acceptance criteria, create a `tasks/acceptance.md` file:
