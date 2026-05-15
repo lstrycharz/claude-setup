@@ -28,7 +28,13 @@ cp "$SCRIPT_DIR/global-rules/qa.md" ~/.claude/rules/
 cp "$SCRIPT_DIR/global-rules/testing.md" ~/.claude/rules/
 cp "$SCRIPT_DIR/global-rules/code-style.md" ~/.claude/rules/
 cp "$SCRIPT_DIR/global-rules/security.md" ~/.claude/rules/
+cp "$SCRIPT_DIR/global-rules/agent-design.md" ~/.claude/rules/
 cp "$SCRIPT_DIR/global-rules/frontend/react.md" ~/.claude/rules/frontend/
+
+# 1b. Playbooks → ~/.claude/playbooks/ (pull-loaded references, not auto-loaded rules)
+echo "→ Installing playbooks to ~/.claude/playbooks/"
+mkdir -p ~/.claude/playbooks
+cp "$SCRIPT_DIR/playbooks/"*.md ~/.claude/playbooks/
 
 # 2. Project template → ~/.claude-template/
 echo "→ Installing project template to ~/.claude-template/"
@@ -161,6 +167,7 @@ echo ""
 echo "✅ Done! Your setup:"
 echo ""
 echo "   ~/.claude/rules/        → Global rules (auto-loaded in every project)"
+echo "   ~/.claude/playbooks/    → Long-form references (pulled when needed, not auto-loaded)"
 echo "   ~/.claude/hooks/        → Hooks (config-protection, block-no-verify, suggest-compact)"
 echo "   ~/.claude/commands/     → Slash commands (/code-review, /security-scan)"
 echo "   ~/.claude/agents/       → Subagents (code-reviewer, security-reviewer)"

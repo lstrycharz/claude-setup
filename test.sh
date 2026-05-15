@@ -54,7 +54,9 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude/rules/testing.md" ] && pass "rules/testing.md installed" || fail "rules/testing.md missing"
 [ -f "$SANDBOX/.claude/rules/code-style.md" ] && pass "rules/code-style.md installed" || fail "rules/code-style.md missing"
 [ -f "$SANDBOX/.claude/rules/security.md" ] && pass "rules/security.md installed" || fail "rules/security.md missing"
+[ -f "$SANDBOX/.claude/rules/agent-design.md" ] && pass "rules/agent-design.md installed" || fail "rules/agent-design.md missing"
 [ -f "$SANDBOX/.claude/rules/frontend/react.md" ] && pass "rules/frontend/react.md installed" || fail "rules/frontend/react.md missing"
+[ -f "$SANDBOX/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md" ] && pass "playbooks/AGENT_PROJECT_PLAYBOOK.md installed" || fail "playbooks/AGENT_PROJECT_PLAYBOOK.md missing"
 [ -f "$SANDBOX/.claude/hooks/config-protection.mjs" ] && pass "hooks/config-protection.mjs installed" || fail "hooks/config-protection.mjs missing"
 [ -f "$SANDBOX/.claude/hooks/block-no-verify.mjs" ] && pass "hooks/block-no-verify.mjs installed" || fail "hooks/block-no-verify.mjs missing"
 [ -f "$SANDBOX/.claude/hooks/suggest-compact.mjs" ] && pass "hooks/suggest-compact.mjs installed" || fail "hooks/suggest-compact.mjs missing"
@@ -271,6 +273,8 @@ echo "n" | "$SCRIPT_DIR/uninstall.sh" > /tmp/uninstall.log 2>&1 || fail "uninsta
 [ ! -f "$SANDBOX/.claude/commands/code-review.md" ] && pass "uninstall removed code-review.md" || fail "uninstall left code-review.md"
 [ ! -f "$SANDBOX/.claude/agents/code-reviewer.md" ] && pass "uninstall removed code-reviewer.md" || fail "uninstall left code-reviewer.md"
 [ ! -f "$SANDBOX/.claude/rules/workflow.md" ] && pass "uninstall removed workflow.md" || fail "uninstall left workflow.md"
+[ ! -f "$SANDBOX/.claude/rules/agent-design.md" ] && pass "uninstall removed agent-design.md" || fail "uninstall left agent-design.md"
+[ ! -f "$SANDBOX/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md" ] && pass "uninstall removed AGENT_PROJECT_PLAYBOOK.md" || fail "uninstall left AGENT_PROJECT_PLAYBOOK.md"
 [ ! -f "$SANDBOX/bin/init-claude" ] && pass "uninstall removed bin/init-claude" || fail "uninstall left bin/init-claude"
 
 # Verify custom settings preserved — tmp file to avoid subshell

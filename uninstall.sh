@@ -10,7 +10,8 @@ echo ""
 OUR_HOOKS=(config-protection.mjs block-no-verify.mjs suggest-compact.mjs)
 OUR_COMMANDS=(code-review.md security-scan.md)
 OUR_AGENTS=(code-reviewer.md security-reviewer.md)
-OUR_RULES=(workflow.md qa.md testing.md code-style.md security.md)
+OUR_RULES=(workflow.md qa.md testing.md code-style.md security.md agent-design.md)
+OUR_PLAYBOOKS=(AGENT_PROJECT_PLAYBOOK.md)
 
 # 1. Remove our hooks
 echo "→ Removing hooks from ~/.claude/hooks/"
@@ -42,6 +43,14 @@ done
 
 # Remove rules/ dir only if empty (user may have custom rules)
 [ -d ~/.claude/rules ] && rmdir ~/.claude/rules 2>/dev/null && echo "  removed empty rules/ dir" || true
+
+# 4b. Remove our playbooks
+echo "→ Removing playbooks from ~/.claude/playbooks/"
+for p in "${OUR_PLAYBOOKS[@]}"; do
+  [ -f ~/.claude/playbooks/"$p" ] && rm -f ~/.claude/playbooks/"$p" && echo "  removed $p"
+done
+# Remove playbooks/ dir only if empty (user may have custom playbooks)
+[ -d ~/.claude/playbooks ] && rmdir ~/.claude/playbooks 2>/dev/null && echo "  removed empty playbooks/ dir" || true
 
 # 5. Remove init-claude
 echo "→ Removing ~/bin/init-claude"

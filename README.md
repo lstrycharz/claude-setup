@@ -115,8 +115,11 @@ claude-setup/
 │   ├── testing.md             # How to write good tests (pytest, vitest, Playwright)
 │   ├── code-style.md          # Clean code rules (short functions, clear names, explicit types)
 │   ├── security.md            # Never leak secrets, validate input, prevent attacks
+│   ├── agent-design.md        # Three-layer framework for AI agent / LLM-pipeline projects
 │   └── frontend/
 │       └── react.md           # React-specific patterns
+├── playbooks/                 # Long-form references (pulled when needed, not auto-loaded)
+│   └── AGENT_PROJECT_PLAYBOOK.md  # Companion to agent-design.md (~270 lines)
 ├── hooks/                     # Automatic safety guardrails
 │   ├── config-protection.mjs  # Don't let Claude weaken your linter rules
 │   ├── block-no-verify.mjs    # Don't let Claude skip pre-commit hooks
@@ -204,6 +207,17 @@ It does **not** touch per-project `.claude/` directories or pre-commit hooks alr
 | `workflow.md` | Plan before building. Work in small chunks. Commit often. Track progress between sessions. Don't skip verification. |
 | `qa.md` | Always write a failing test first. Then make it pass. Then clean up. No exceptions. |
 | `testing.md` | How to write tests for Python (pytest), TypeScript (vitest), and browsers (Playwright). Keep them fast and deterministic. |
-| `code-style.md` | Functions under 30 lines. Clear names. Explicit types. Composition over inheritance. |
+| `code-style.md` | Functions under 30 lines. Clear names. Explicit types. Composition over inheritance. Deep modules over shallow. |
 | `security.md` | Never hardcode secrets. Validate all input. Prevent SQL injection, XSS, and SSRF. Check auth on every request. |
+| `agent-design.md` | Three-layer framework for AI agent / LLM-pipeline projects (decomposition → evaluation → self-improvement). Self-scopes — skipped for non-agent work. |
 | `frontend/react.md` | Functional components only. Use TanStack Query. No prop drilling. Early returns in JSX. |
+
+## Playbooks (pull-loaded references)
+
+Some content is too long for the ambient rule layer but useful to have available on every machine. These live in `~/.claude/playbooks/` and are not auto-loaded — Claude reads them via the Read tool only when relevant (e.g. starting an agent project).
+
+| Playbook | When Claude pulls it |
+|----------|---------------------|
+| `AGENT_PROJECT_PLAYBOOK.md` | Plan mode at the start of an agent / LLM-pipeline project. The 50-line `agent-design.md` rule points to it. ~270 lines of detail on the three-layer framework, with worked examples from GEOQuery. |
+
+This is the push-vs-pull pattern: short principles **push** every session via rules; deep references **pull** only when needed.
