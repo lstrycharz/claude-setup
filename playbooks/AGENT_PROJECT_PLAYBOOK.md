@@ -4,8 +4,10 @@ A planning aid for any new AI-agent or LLM-pipeline project, distilled from
 building GEOQuery (v1 → v2 → v3). The companion rule that points back here
 lives at `~/.claude/rules/agent-design.md`.
 
-The rest of this repo is the **worked example** — every principle below is
-implemented somewhere; file pointers in `[brackets]` show you where.
+**Worked example:** every principle below is implemented in GEOQuery —
+<https://github.com/lstrycharz/geoquery>. File pointers in `[brackets]`
+throughout this doc reference that repo. Read the principle; if you want
+to see what it looks like in production code, open the linked file there.
 
 ---
 
@@ -505,5 +507,5 @@ At project kickoff:
    the lesson is usually already recorded.
 
 If you need a worked example of any specific pattern, the GEOQuery repo
-implements every one. Find the section header, open the linked files,
-read the surrounding tests.
+(<https://github.com/lstrycharz/geoquery>) implements every one. Find the
+section header, open the linked files, read the surrounding tests.
