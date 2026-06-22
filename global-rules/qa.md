@@ -44,3 +44,14 @@ Then go back to RED for the next behavior.
 - Do not write multiple tests at once before implementing anything.
 - Do not skip refactoring — it's where code quality lives.
 - Do not treat tests as optional or secondary to implementation.
+
+## Missing test framework is a blocking condition
+
+If you **cannot write the failing test** because the project has no working test framework (none configured, or the existing one is broken), **stop.** Do not silently proceed to write implementation code.
+
+- Tell the user the coverage gap explicitly, *before* writing the code — name which behaviors will ship unverified.
+- Get an explicit decision: fix/add the framework first, or have the user consciously accept the gap.
+- A broken or absent runner is a stop-the-line condition, not a footnote. The biggest source of shipped bugs is logic written where nothing could test it — surface and own that risk, never bury it.
+- Record any accepted gap somewhere durable (PROGRESS.md / known-issues) so it stays visible.
+
+This applies *especially* under deadline pressure — that's exactly when the gate gets skipped.

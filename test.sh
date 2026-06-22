@@ -60,6 +60,10 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude/hooks/config-protection.mjs" ] && pass "hooks/config-protection.mjs installed" || fail "hooks/config-protection.mjs missing"
 [ -f "$SANDBOX/.claude/hooks/block-no-verify.mjs" ] && pass "hooks/block-no-verify.mjs installed" || fail "hooks/block-no-verify.mjs missing"
 [ -f "$SANDBOX/.claude/hooks/suggest-compact.mjs" ] && pass "hooks/suggest-compact.mjs installed" || fail "hooks/suggest-compact.mjs missing"
+[ -f "$SANDBOX/.claude/hooks/enforce-floor.mjs" ] && pass "hooks/enforce-floor.mjs installed" || fail "hooks/enforce-floor.mjs missing"
+[ -f "$SANDBOX/.claude-template/verify.sh" ] && pass "template/verify.sh installed" || fail "template/verify.sh missing"
+[ -f "$SANDBOX/.claude-template/ci/github-actions.yml" ] && pass "template/ci installed" || fail "template/ci missing"
+[ -f "$SANDBOX/.claude-template/configs/eslint.config.mjs.tpl" ] && pass "template/configs installed" || fail "template/configs missing"
 [ -f "$SANDBOX/.claude/commands/code-review.md" ] && pass "commands/code-review.md installed" || fail "commands/code-review.md missing"
 [ -f "$SANDBOX/.claude/commands/security-scan.md" ] && pass "commands/security-scan.md installed" || fail "commands/security-scan.md missing"
 [ -f "$SANDBOX/.claude/agents/code-reviewer.md" ] && pass "agents/code-reviewer.md installed" || fail "agents/code-reviewer.md missing"
@@ -79,7 +83,7 @@ let count = 0;
 for (const e of pre) if (Array.isArray(e.hooks)) count += e.hooks.length;
 console.log(count);
 ")
-  [ "$HOOK_COUNT" = "3" ] && pass "settings.json has exactly 3 PreToolUse hooks" || fail "settings.json has $HOOK_COUNT hooks (expected 3)"
+  [ "$HOOK_COUNT" = "4" ] && pass "settings.json has exactly 4 PreToolUse hooks" || fail "settings.json has $HOOK_COUNT hooks (expected 4)"
 else
   fail "settings.json not created"
 fi
@@ -140,7 +144,7 @@ let count = 0;
 for (const e of pre) if (Array.isArray(e.hooks)) count += e.hooks.length;
 console.log(count);
 ")
-[ "$HOOK_COUNT" = "3" ] && pass "no duplicate hooks after re-install (count=3)" || fail "duplicate hooks after re-install (count=$HOOK_COUNT)"
+[ "$HOOK_COUNT" = "4" ] && pass "no duplicate hooks after re-install (count=4)" || fail "duplicate hooks after re-install (count=$HOOK_COUNT)"
 
 # ============================================================
 # SECTION: Hook behavior
@@ -166,6 +170,25 @@ echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify allows normal commit" ||
 # suggest-compact never blocks
 OUT=$(echo '{"tool_input":{"file_path":"src/app.ts"}}' | node "$SANDBOX/.claude/hooks/suggest-compact.mjs" 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "suggest-compact never blocks" || fail "suggest-compact wrongly blocked"
+
+# enforce-floor: allows non-commit git commands
+OUT=$(echo '{"tool_input":{"command":"git status"}}' | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows non-commit git" || fail "enforce-floor wrongly blocked git status"
+
+# enforce-floor: blocks commit in a code repo (package.json) with no pre-commit hook
+EF_REPO="$SANDBOX/ef-nofloor"; mkdir -p "$EF_REPO"; ( cd "$EF_REPO" && git init -q && echo '{}' > package.json )
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor blocks commit when no floor wired" || fail "enforce-floor did NOT block missing floor"
+
+# enforce-floor: allows commit once the pre-commit hook exists
+touch "$EF_REPO/.git/hooks/pre-commit"; chmod +x "$EF_REPO/.git/hooks/pre-commit"
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows commit when floor wired" || fail "enforce-floor blocked despite floor present"
+
+# enforce-floor: allows commit in a non-code repo (no manifest)
+EF_DOCS="$SANDBOX/ef-docs"; mkdir -p "$EF_DOCS"; ( cd "$EF_DOCS" && git init -q && echo hi > README.md )
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_DOCS\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows commit in non-code repo" || fail "enforce-floor wrongly blocked non-code repo"
 
 # ============================================================
 # SECTION: Malformed settings.json

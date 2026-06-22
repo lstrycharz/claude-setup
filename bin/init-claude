@@ -27,22 +27,67 @@ else
   echo "ℹ️  .gitignore already exists — skipped. Review it to ensure .env* is ignored."
 fi
 
-# Install gitleaks pre-commit hook if this is a git repo
+# Install gitleaks + verify.sh pre-commit hook if this is a git repo
 if [ -d ".git" ]; then
   cp "$TEMPLATE/.pre-commit-hook" .git/hooks/pre-commit
   chmod +x .git/hooks/pre-commit
-  echo "✅ Pre-commit hook installed (gitleaks secret scanning)"
+  echo "✅ Pre-commit hook installed (secret scan + verify.sh floor)"
 else
   echo "ℹ️  Not a git repo — skipping pre-commit hook. Run 'git init' first, then re-run init-claude."
 fi
 
-# Clean up template-only files that shouldn't be in .claude/
+# The deterministic floor: one verify.sh that every gate runs.
+chmod +x .claude/verify.sh 2>/dev/null
+echo "✅ .claude/verify.sh installed (the floor: lint + typecheck + test)"
+
+# ── Tier 4: drop stack starter configs at the project root (never overwrite) ──
+drop() { # drop <template-under-.claude/configs> <target-at-root>
+  if [ -f ".claude/configs/$1" ] && [ ! -e "$2" ]; then
+    cp ".claude/configs/$1" "$2"
+    echo "✅ $2 added (starter config — edit per project)"
+  fi
+}
+FLOOR_GAP=""
+if [ -f "package.json" ]; then
+  drop "eslint.config.mjs.tpl"   "eslint.config.mjs"
+  drop "tsconfig.base.json.tpl"  "tsconfig.json"
+  drop "prettierrc.json.tpl"     ".prettierrc.json"
+  # ── Tier 2: floor check — a JS project with no test script has no test floor ──
+  if ! node -e "process.exit(require('./package.json').scripts && require('./package.json').scripts.test ? 0 : 1)" 2>/dev/null; then
+    FLOOR_GAP="No \"test\" script in package.json — this project ships with NO test floor."
+  fi
+fi
+if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || ls ./*.py >/dev/null 2>&1; then
+  drop "ruff.toml.tpl" "ruff.toml"
+  if ! command -v pytest >/dev/null 2>&1; then
+    FLOOR_GAP="pytest not found — this Python project ships with NO test floor."
+  fi
+fi
+
+# Surface a missing test floor LOUDLY and durably (PROGRESS.md is read every
+# Session Start) so it's an owned decision, never a silent slip. See qa.md.
+if [ -n "$FLOOR_GAP" ]; then
+  echo ""
+  echo "⚠️  TEST FLOOR GAP: $FLOOR_GAP"
+  echo "    Per qa.md, this is a blocking decision: wire a test runner, or"
+  echo "    explicitly accept the gap with the user before writing code."
+  {
+    echo ""
+    echo "## ⚠️ Known Issue — test floor gap (flagged by init-claude)"
+    echo "- $FLOOR_GAP"
+    echo "- Per qa.md: wire a test runner or get an explicit decision before relying on this code."
+  } >> .claude/PROGRESS.md
+fi
+
+# Clean up template-only files that shouldn't live inside .claude/
 rm -f .claude/.project-gitignore
 rm -f .claude/.pre-commit-hook
 
 echo "✅ .claude/ scaffolded"
 echo ""
 echo "Next steps:"
-echo "  1. Edit .claude/CLAUDE.md — fill in your tech stack and project structure"
-echo "  2. Edit .claude/settings.local.json — add your allowed commands"
-echo "  3. Commit .claude/ (CLAUDE.local.md and settings.local.json are gitignored)"
+echo "  1. Edit .claude/CLAUDE.md — fill in tech stack, and the lint/typecheck/test commands"
+echo "  2. Edit .claude/verify.sh — confirm it runs your real lint + typecheck + test"
+echo "  3. Enable the merge gate: copy a file from .claude/ci/ and follow .claude/ci/BRANCH_PROTECTION.md"
+echo "  4. Edit .claude/settings.local.json — add your allowed commands"
+echo "  5. Commit .claude/ (CLAUDE.local.md and settings.local.json are gitignored)"

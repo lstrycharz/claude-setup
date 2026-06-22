@@ -77,8 +77,9 @@ Never implement a full feature in one pass. Break every task into small chunks a
 
 1. **Implement** one chunk (a single behavior, endpoint, component, etc.)
 2. **Test** — run relevant tests, confirm they pass
-3. **Commit** — granular commit as a save point
-4. Then move to the next chunk.
+3. **Review** — before declaring the chunk done, run the `code-reviewer` agent on the chunk's diff. **Mandatory** for any chunk that adds/changes logic, spans multiple files, or ships without test coverage. Fix the findings before committing. Skip only for trivial edits (single line, comment, config value). A fresh adversarial pass catches what re-reading your own diff does not — and catches it now, not in post-merge review.
+4. **Commit** — granular commit as a save point
+5. Then move to the next chunk.
 
 Rules:
 - Each chunk should be small enough to review in under 5 minutes
@@ -211,6 +212,7 @@ Every line you change should trace directly back to the task. Don't scope-creep.
 - Match the existing style (naming, formatting, patterns) even if you'd write it differently in a greenfield project
 - Remove only the code that your changes made dead — nothing else
 - If you notice unrelated dead code or pre-existing issues, **mention them** (spawn a task, file a note) rather than silently fixing them
+- When your change **adds files** (docs, tests, fixtures, generated output), verify they don't leak into build or runtime artifacts — check `.dockerignore`, `.gitignore`, and any packaging globs. New docs and tests should not ship in the production image.
 
 **Don't:**
 - Reformat adjacent code, rewrite comments, or "clean up" imports that weren't part of the task
