@@ -27,6 +27,7 @@ jobs:
       - name: Logic review (advisory)
         if: ${{ env.OPENROUTER_API_KEY != '' }} # skip until the secret is set
         env:
+          LOGIC_REVIEWER_MODEL: deepseek/deepseek-v4-pro
           REVIEW_BASE_REF: origin/${{ github.base_ref }}
           REVIEW_COMMENT_FILE: ${{ github.workspace }}/logic-review.md
         run: |

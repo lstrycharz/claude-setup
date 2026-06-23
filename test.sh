@@ -385,6 +385,16 @@ rev "const c=m.renderComment({status:'REJECT',critical_flags:['boomflag'],warnin
 rev "const c=m.renderComment({status:'REJECT',critical_flags:['a\nb'],warnings:[]}); process.exit(c.split('\n').filter(l=>l.startsWith('- ')).length===1?0:1)" \
   && pass "reviewer: renderComment collapses newlines in a flag to one bullet" || fail "reviewer: renderComment let a flag span multiple bullets"
 
+# --- Deprecated/unknown model: detect it and warn distinctly (not a generic blip) ---
+rev "process.exit(m.isModelError(400,'deepseek/x is not a valid model ID')===true?0:1)" \
+  && pass "reviewer: isModelError flags a 400 'not a valid model' as a model problem" || fail "reviewer: isModelError missed an invalid-model 400"
+rev "process.exit(m.isModelError(404,'model not found')===true?0:1)" \
+  && pass "reviewer: isModelError flags a 404 model-not-found" || fail "reviewer: isModelError missed a 404 model error"
+rev "process.exit(m.isModelError(500,'internal server error')===false?0:1)" \
+  && pass "reviewer: isModelError does NOT treat a 500 as a model problem" || fail "reviewer: isModelError misclassified a 500"
+rev "const c=m.renderModelWarning('deepseek/deepseek-v4-pro','not a valid model ID'); process.exit(c.includes('deepseek/deepseek-v4-pro')&&c.includes('LOGIC_REVIEWER_MODEL')&&c.includes('logic-reviewer')?0:1)" \
+  && pass "reviewer: renderModelWarning names the model + how to fix it" || fail "reviewer: renderModelWarning missing model/fix/marker"
+
 # ============================================================
 # SECTION: Malformed settings.json
 # ============================================================
