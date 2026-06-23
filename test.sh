@@ -67,6 +67,9 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude-template/bin/review-diff.mjs" ] && pass "template/bin/review-diff.mjs installed" || fail "template/bin/review-diff.mjs missing"
 [ -f "$SANDBOX/.claude-template/review/logic-reviewer.md" ] && pass "template/review prompt installed" || fail "template/review prompt missing"
 [ -f "$SANDBOX/.claude-template/ci/reviewer-github.yml" ] && pass "template/ci/reviewer-github.yml installed" || fail "template/ci/reviewer-github.yml missing"
+# #3: the GitHub reviewer workflow must be wired to post the findings onto the PR.
+grep -q 'pull-requests: write' "$SANDBOX/.claude-template/ci/reviewer-github.yml" && pass "reviewer-github.yml grants PR-comment write permission" || fail "reviewer-github.yml lacks pull-requests: write"
+grep -q 'gh pr comment' "$SANDBOX/.claude-template/ci/reviewer-github.yml" && pass "reviewer-github.yml posts a PR comment" || fail "reviewer-github.yml does not post a PR comment"
 [ -f "$SANDBOX/.claude-template/ci/reviewer-bitbucket.yml" ] && pass "template/ci/reviewer-bitbucket.yml installed" || fail "template/ci/reviewer-bitbucket.yml missing"
 # W6: floor CI images are Node-only — they must at least NOTE Python setup so a
 # uv/poetry project doesn't silently no-op its Python checks (false green).
@@ -363,6 +366,14 @@ rev "let t=false;try{m.validateBaseUrl('not a url')}catch{t=true};process.exit(t
 # --- W5: model-controlled strings can't inject newlines into the log ---
 rev "const e=m.advisoryExit({status:'REJECT',critical_flags:['boom\n✅ Logic review: PASS'],warnings:[]}); process.exit(e.lines.every(l=>!l.includes('\n'))&&e.lines.some(l=>l.includes('boom'))?0:1)" \
   && pass "reviewer: advisory output strips newlines from model flags (log-injection guard)" || fail "reviewer: model flag newline leaked into log output"
+
+# --- #3: renderComment produces a PR-comment body (Markdown, stable marker) ---
+rev "const c=m.renderComment({status:'PASS',critical_flags:[],warnings:[]}); process.exit(c.includes('logic-reviewer')&&/PASS/.test(c)?0:1)" \
+  && pass "reviewer: renderComment marks PASS with a stable marker" || fail "reviewer: renderComment PASS missing marker/status"
+rev "const c=m.renderComment({status:'REJECT',critical_flags:['boomflag'],warnings:[]}); process.exit(/REJECT/.test(c)&&c.includes('boomflag')&&/not\b.*block|advisory/i.test(c)?0:1)" \
+  && pass "reviewer: renderComment shows REJECT flags + advisory disclaimer" || fail "reviewer: renderComment REJECT missing flags/disclaimer"
+rev "const c=m.renderComment({status:'REJECT',critical_flags:['a\nb'],warnings:[]}); process.exit(c.split('\n').filter(l=>l.startsWith('- ')).length===1?0:1)" \
+  && pass "reviewer: renderComment collapses newlines in a flag to one bullet" || fail "reviewer: renderComment let a flag span multiple bullets"
 
 # ============================================================
 # SECTION: Malformed settings.json

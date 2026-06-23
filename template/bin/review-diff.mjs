@@ -156,6 +156,27 @@ export function advisoryExit(verdict) {
   return { code: 0, level: 'OK', lines };
 }
 
+// Render the verdict as a Markdown PR-comment body. The leading HTML marker lets
+// the CI step find-and-update one comment instead of spamming a new one per push.
+// Flag/warning newlines are collapsed so a model string can't break the layout.
+export function renderComment(verdict, { truncated = false } = {}) {
+  const clean = (s) => String(s).replace(/[\r\n]+/g, ' ');
+  const out = ['<!-- logic-reviewer -->', '### 🤖 Cross-vendor logic review (advisory)', ''];
+  if (verdict.status === 'REJECT') {
+    out.push('**Status: REJECT** — blocking-class issues flagged. This is **advisory** and does **not** block the merge.', '', '**Critical:**');
+    for (const f of verdict.critical_flags) out.push(`- ${clean(f)}`);
+  } else {
+    out.push('**Status: PASS** — no blocking-class issues found.');
+  }
+  if (verdict.warnings?.length) {
+    out.push('', '**Warnings (non-blocking):**');
+    for (const w of verdict.warnings) out.push(`- ${clean(w)}`);
+  }
+  if (truncated) out.push('', '_Diff was truncated before review._');
+  out.push('', '_Independent second-vendor model — verify each finding before acting; it can be wrong._');
+  return out.join('\n');
+}
+
 // ── IO shell (thin; not unit-tested) ────────────────────────────────────────
 
 function getDiff() {
@@ -244,6 +265,17 @@ async function main() {
   } catch (err) {
     console.warn(`⚠️  ADVISORY — logic reviewer returned an unparseable verdict (${err.message}); skipping (not blocking).`);
     process.exit(0);
+  }
+
+  // Surface the findings where a human will see them: write a PR-comment body the
+  // CI step posts onto the PR (CI logs get skimmed past). Best-effort — a write
+  // failure must not change the advisory outcome.
+  if (process.env.REVIEW_COMMENT_FILE) {
+    try {
+      fs.writeFileSync(process.env.REVIEW_COMMENT_FILE, renderComment(verdict, { truncated }));
+    } catch (err) {
+      console.warn(`⚠️  could not write REVIEW_COMMENT_FILE (${err.message}); continuing.`);
+    }
   }
 
   const out = advisoryExit(verdict);
