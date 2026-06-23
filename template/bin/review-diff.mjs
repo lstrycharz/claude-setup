@@ -47,6 +47,9 @@ const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 1000);
 const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 120000);
 
 export class ReviewError extends Error {}
+// A model OpenRouter rejects as unknown/deprecated — kept distinct from a
+// transient network failure so we can tell the user to update the model ID.
+export class ModelUnavailableError extends ReviewError {}
 
 // Reject anything but http/https so a stray OPENROUTER_BASE_URL can't become a
 // file:// read or some other scheme (W1). Deliberately NOT full SSRF validation:
@@ -177,6 +180,33 @@ export function renderComment(verdict, { truncated = false } = {}) {
   return out.join('\n');
 }
 
+// Is an OpenRouter error an unknown/deprecated-model problem (a 4xx whose body
+// mentions the model, e.g. "... is not a valid model ID") vs a 5xx/network blip?
+export function isModelError(status, bodyText) {
+  // 400/404 = unknown/invalid model; 403 can mean a model gated behind a plan.
+  // Require the body to actually mention the model, so a plain auth/credits 403
+  // isn't misread as a model problem.
+  if (status !== 400 && status !== 403 && status !== 404) return false;
+  return /model/i.test(String(bodyText || ''));
+}
+
+// PR-comment body for a dead model: name it and say exactly how to fix it, so a
+// deprecated model surfaces as a clear "update me" message, not a silent skip.
+export function renderModelWarning(model, detail = '') {
+  const d = String(detail).replace(/[\r\n]+/g, ' ').slice(0, 200);
+  return [
+    '<!-- logic-reviewer -->',
+    '### 🤖 Cross-vendor logic review (advisory)',
+    '',
+    `**Reviewer could not run — model \`${model}\` is unavailable or deprecated.**`,
+    d ? `> ${d}` : '',
+    '',
+    'Set `LOGIC_REVIEWER_MODEL` to a current OpenRouter model ID, then re-run.',
+    '',
+    '_Advisory: this does not block the merge._',
+  ].filter(Boolean).join('\n');
+}
+
 // ── IO shell (thin; not unit-tested) ────────────────────────────────────────
 
 function getDiff() {
@@ -218,6 +248,9 @@ async function callModel(base, apiKey, payload) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
+    if (isModelError(res.status, body)) {
+      throw new ModelUnavailableError(`HTTP ${res.status}: ${body.slice(0, 200)}`);
+    }
     throw new ReviewError(`HTTP ${res.status}: ${body.slice(0, 200)}`);
   }
   return res.json();
@@ -254,6 +287,14 @@ async function main() {
   try {
     apiJson = await callModel(base, apiKey, payload);
   } catch (err) {
+    if (err instanceof ModelUnavailableError) {
+      console.error(`⚠️  REVIEWER MODEL UNAVAILABLE — '${model}' was rejected by OpenRouter (${err.message}).`);
+      console.error('    It may be deprecated or the ID may be wrong. Set LOGIC_REVIEWER_MODEL to a current OpenRouter model ID.');
+      if (process.env.REVIEW_COMMENT_FILE) {
+        try { fs.writeFileSync(process.env.REVIEW_COMMENT_FILE, renderModelWarning(model, err.message)); } catch { /* best-effort */ }
+      }
+      process.exit(0); // loud + surfaced on the PR, but advisory: a dead model must not block merges
+    }
     // Reviewer unreachable — advisory mode must not wedge the pipeline.
     console.warn(`⚠️  ADVISORY — logic reviewer could not reach the model (${err.message}); skipping (not blocking).`);
     process.exit(0);
