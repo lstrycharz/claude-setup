@@ -22,7 +22,17 @@ Run the full test suite to orient yourself on project scope and current state. D
 <!-- Auto-populated from first plan mode session -->
 
 ## Commands
-<!-- Auto-populated from first plan mode session -->
+<!-- Auto-populated from first plan mode session.
+     Record the real lint / typecheck / test commands here AND wire them into
+     .claude/verify.sh — that one script is the floor every gate runs
+     (pre-commit hook, enforce-floor hook, CI).
+
+     verify.sh detects the Node manager from the lockfile and runs Python tools
+     through the project env (uv run / poetry run). MONOREPO (Python backend +
+     Node frontend in one repo): list each sub-project so both suites run —
+       VERIFY_ROOTS="backend frontend" .claude/verify.sh
+     Defaults to the repo root. -->
+- Run the floor: `.claude/verify.sh`  (monorepo: `VERIFY_ROOTS="backend frontend" .claude/verify.sh`)
 
 ## Project Structure
 <!-- Auto-populated from first plan mode session -->
@@ -33,9 +43,11 @@ Run the full test suite to orient yourself on project scope and current state. D
 
 ## Definition of Done
 - Tests written before implementation (red/green/refactor cycle)
+- `.claude/verify.sh` passes (lint + typecheck + test) — the deterministic floor
 - Types pass
 - Tests pass
 - No new linting errors
+- `code-reviewer` agent run on the diff; findings addressed (per workflow.md chunk loop)
 - DB migrations generated if models changed
 - No `TODO` or `FIXME` left without a linked issue
 - Works locally end-to-end before pushing

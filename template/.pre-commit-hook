@@ -1,19 +1,32 @@
 #!/bin/bash
-# Pre-commit hook: scan staged changes for secrets using gitleaks
-# Installed by init-claude
+# Pre-commit hook: (1) scan staged changes for secrets (gitleaks),
+#                  (2) run the deterministic floor (.claude/verify.sh).
+# Installed by init-claude.
 
+# ── 1. Secret scan ────────────────────────────────────────────────────────────
 if ! command -v gitleaks &> /dev/null; then
   echo "⚠️  gitleaks not installed — skipping secret scan"
   echo "   Install: brew install gitleaks"
-  exit 0
+else
+  gitleaks protect --staged --no-banner
+  if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ Secrets detected in staged files. Commit blocked."
+    echo ""
+    echo "If this is a false positive, add to .gitleaksignore:"
+    echo "  echo '<fingerprint>' >> .gitleaksignore"
+    exit 1
+  fi
 fi
 
-gitleaks protect --staged --no-banner
-if [ $? -ne 0 ]; then
-  echo ""
-  echo "❌ Secrets detected in staged files. Commit blocked."
-  echo ""
-  echo "If this is a false positive, add to .gitleaksignore:"
-  echo "  echo '<fingerprint>' >> .gitleaksignore"
-  exit 1
+# ── 2. Deterministic floor: lint + typecheck + test ─────────────────────────────
+# One source of truth, shared with the enforce-floor hook and CI.
+if [ -f ".claude/verify.sh" ]; then
+  bash .claude/verify.sh
+  if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ verify.sh failed — commit blocked. Fix lint/types/tests; don't bypass."
+    echo "   (Do NOT use --no-verify; it's blocked for the agent and defeats the gate.)"
+    exit 1
+  fi
 fi

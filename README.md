@@ -25,7 +25,26 @@ These run automatically in the background and stop Claude from doing dumb things
 |---|---|
 | **Weakening your code rules** | Blocks Claude from editing your linter/formatter configs. It has to fix the code, not loosen the rules. |
 | **Skipping safety checks** | Blocks `--no-verify` on git commits. Your secret scanner stays on. |
+| **Committing with no floor** | Blocks `git commit` in a code repo that has no pre-commit gate installed — so commits can't ship with nothing checking them. Points you at `init-claude`. |
 | **Running out of memory** | After 50 actions, reminds Claude to save progress and free up space with `/compact`. |
+
+### The deterministic floor (gates, not vibes)
+
+Every project gets one `.claude/verify.sh` — **the single source of truth for lint + typecheck + test.** Three gates run that same script, so what the agent runs, what blocks your commit, and what blocks a merge are identical:
+
+1. **Pre-commit hook** — runs `verify.sh` (+ secret scan) on every commit, agent or human.
+2. **`enforce-floor` hook** — blocks the agent from committing a code repo that has no floor wired at all.
+3. **CI templates** (`.claude/ci/`) — run `verify.sh` on PRs; enable branch protection (`BRANCH_PROTECTION.md`) to make red **block the merge**.
+
+`init-claude` auto-detects your stack, drops starter ESLint / TS / Prettier / ruff configs, and **loudly flags a missing test framework** (writing it into `PROGRESS.md`) instead of letting untested code ship silently. The rule: gates the machine enforces, not instructions a human has to remember.
+
+`verify.sh` picks the Node manager from the lockfile (pnpm / yarn / bun / npm) and runs Python tools through the project env (`uv run` / `poetry run`) — so it never false-greens by running `npm` against a pnpm tree or a global `pytest` that collects nothing. **Monorepos** (e.g. a Python backend + Node frontend in one repo) opt in explicitly — point it at each sub-project and it runs and accumulates every suite:
+
+```bash
+VERIFY_ROOTS="backend frontend" .claude/verify.sh
+```
+
+Defaults to the repo root; the opt-in is one line, not magic directory-walking.
 
 ### Slash Commands (on-demand checks)
 

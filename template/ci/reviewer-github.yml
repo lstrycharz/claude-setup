@@ -1,0 +1,55 @@
+# Cross-vendor logic review (ADVISORY) — GitHub Actions.
+#
+# An independent second-vendor model reviews the PR diff for semantic / security
+# flaws that lint + type-checking can't catch. This is the "smart review" layer
+# that sits ON TOP of the deterministic floor (verify.sh) — intentionally NOT
+# part of it, because an LLM verdict is probabilistic and the floor stays
+# intent-proof.
+#
+# ADVISORY-FIRST: review-diff.mjs logs findings but exits 0 — it does NOT block
+# the merge while we gather false-positive + prompt-injection data. The only
+# non-zero exit is a missing OPENROUTER_API_KEY, so a misconfigured gate is
+# visible instead of silently no-op-ing.
+#
+# Setup:
+#   1. Copy to .github/workflows/logic-review.yml
+#   2. Add OPENROUTER_API_KEY as a repository secret
+#      (Settings → Secrets and variables → Actions).
+#   3. Optional: set LOGIC_REVIEWER_MODEL to pin a specific cross-vendor model.
+name: logic-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write # post the advisory findings as a PR comment
+jobs:
+  logic-review:
+    runs-on: ubuntu-latest
+    env:
+      COMMENT_FILE: ${{ runner.temp }}/logic-review.md
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the diff against the base ref resolves
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Logic review (advisory)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REVIEW_BASE_REF: origin/${{ github.base_ref }}
+          REVIEW_COMMENT_FILE: ${{ runner.temp }}/logic-review.md
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          node .claude/bin/review-diff.mjs
+      - name: Post findings to the PR
+        if: always() # still post even if the reviewer step was skipped/errored
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f "$COMMENT_FILE" ] || { echo "no findings to post"; exit 0; }
+          # Update the bot's existing comment if present, else create one (no spam).
+          gh pr comment "$PR" --body-file "$COMMENT_FILE" --edit-last \
+            || gh pr comment "$PR" --body-file "$COMMENT_FILE"

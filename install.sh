@@ -46,6 +46,12 @@ cp "$SCRIPT_DIR/template/settings.local.json" ~/.claude-template/
 cp "$SCRIPT_DIR/template/dot-gitignore" ~/.claude-template/.gitignore
 cp "$SCRIPT_DIR/template/.project-gitignore" ~/.claude-template/
 cp "$SCRIPT_DIR/template/.pre-commit-hook" ~/.claude-template/
+cp "$SCRIPT_DIR/template/verify.sh" ~/.claude-template/
+mkdir -p ~/.claude-template/ci ~/.claude-template/configs ~/.claude-template/bin ~/.claude-template/review
+cp "$SCRIPT_DIR/template/ci/"* ~/.claude-template/ci/
+cp "$SCRIPT_DIR/template/configs/"* ~/.claude-template/configs/
+cp "$SCRIPT_DIR/template/bin/"* ~/.claude-template/bin/
+cp "$SCRIPT_DIR/template/review/"* ~/.claude-template/review/
 
 # 3. CLI tools → ~/bin/
 echo "→ Installing init-claude to ~/bin/"
@@ -108,7 +114,7 @@ settings.env.ENABLE_TOOL_SEARCH = 'true';
 
 // Hook files this script manages — used to identify our entries during merge.
 // Matching by filename (not full path) so detection survives path changes.
-const OUR_HOOK_FILES = ['config-protection.mjs', 'suggest-compact.mjs', 'block-no-verify.mjs'];
+const OUR_HOOK_FILES = ['config-protection.mjs', 'suggest-compact.mjs', 'block-no-verify.mjs', 'enforce-floor.mjs'];
 const isOurHook = (h) =>
   h && h.type === 'command' && typeof h.command === 'string' &&
   OUR_HOOK_FILES.some(name => h.command.includes(name));
@@ -120,7 +126,8 @@ const OUR_MATCHERS = {
     { type: 'command', command: 'node ' + hooksDir + '/suggest-compact.mjs' }
   ],
   'Bash': [
-    { type: 'command', command: 'node ' + hooksDir + '/block-no-verify.mjs' }
+    { type: 'command', command: 'node ' + hooksDir + '/block-no-verify.mjs' },
+    { type: 'command', command: 'node ' + hooksDir + '/enforce-floor.mjs' }
   ]
 };
 
@@ -168,8 +175,8 @@ echo "✅ Done! Your setup:"
 echo ""
 echo "   ~/.claude/rules/        → Global rules (auto-loaded in every project)"
 echo "   ~/.claude/playbooks/    → Long-form references (pulled when needed, not auto-loaded)"
-echo "   ~/.claude/hooks/        → Hooks (config-protection, block-no-verify, suggest-compact)"
-echo "   ~/.claude/commands/     → Slash commands (/code-review, /security-scan)"
+echo "   ~/.claude/hooks/        → Hooks (config-protection, block-no-verify, enforce-floor, suggest-compact)"
+echo "   ~/.claude/commands/     → Slash commands (/code-review, /security-scan, /logic-review)"
 echo "   ~/.claude/agents/       → Subagents (code-reviewer, security-reviewer)"
 echo "   ~/.claude-template/     → Project template (used by init-claude)"
 echo "   ~/bin/init-claude       → Scaffold new projects"
