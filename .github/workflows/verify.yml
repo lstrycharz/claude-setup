@@ -1,0 +1,17 @@
+# The harness's own deterministic floor, run as a merge gate on itself.
+# Same idea it ships to every project: one verify.sh, run by CI and by hand.
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run the floor
+        run: bash verify.sh

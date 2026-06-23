@@ -1,0 +1,43 @@
+# The cross-vendor logic reviewer, activated on the harness's own PRs (advisory).
+# Runs THIS repo's reviewer (template/bin/review-diff.mjs) against the PR diff and
+# posts the findings as a PR comment. Never blocks the merge.
+#
+# Requires the OPENROUTER_API_KEY repository secret. Until that's set, the review
+# step skips cleanly (the guard below) rather than failing the PR.
+name: logic-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  logic-review:
+    runs-on: ubuntu-latest
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      COMMENT_FILE: ${{ runner.temp }}/logic-review.md
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the diff against the base ref resolves
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Logic review (advisory)
+        if: ${{ env.OPENROUTER_API_KEY != '' }} # skip until the secret is set
+        env:
+          REVIEW_BASE_REF: origin/${{ github.base_ref }}
+          REVIEW_COMMENT_FILE: ${{ runner.temp }}/logic-review.md
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          node template/bin/review-diff.mjs
+      - name: Post findings to the PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f "$COMMENT_FILE" ] || { echo "no findings to post"; exit 0; }
+          gh pr comment "$PR" --body-file "$COMMENT_FILE" --edit-last \
+            || gh pr comment "$PR" --body-file "$COMMENT_FILE"
