@@ -8,7 +8,7 @@ echo "Uninstalling Claude Code setup..."
 echo ""
 
 OUR_HOOKS=(config-protection.mjs block-no-verify.mjs suggest-compact.mjs enforce-floor.mjs)
-OUR_COMMANDS=(code-review.md security-scan.md)
+OUR_COMMANDS=(code-review.md security-scan.md logic-review.md)
 OUR_AGENTS=(code-reviewer.md security-reviewer.md)
 OUR_RULES=(workflow.md qa.md testing.md code-style.md security.md agent-design.md)
 OUR_PLAYBOOKS=(AGENT_PROJECT_PLAYBOOK.md)
