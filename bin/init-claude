@@ -37,7 +37,7 @@ else
 fi
 
 # The deterministic floor: one verify.sh that every gate runs.
-chmod +x .claude/verify.sh 2>/dev/null
+chmod +x .claude/verify.sh 2>/dev/null  # best-effort; the template file is already +x (S2)
 echo "✅ .claude/verify.sh installed (the floor: lint + typecheck + test)"
 
 # ── Tier 4: drop stack starter configs at the project root (never overwrite) ──
@@ -59,8 +59,13 @@ if [ -f "package.json" ]; then
 fi
 if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || ls ./*.py >/dev/null 2>&1; then
   drop "ruff.toml.tpl" "ruff.toml"
-  if ! command -v pytest >/dev/null 2>&1; then
-    FLOOR_GAP="pytest not found — this Python project ships with NO test floor."
+  # A uv/poetry project reaches pytest through its env, not bare PATH — mirror
+  # verify.sh's runner detection so a well-configured project isn't false-flagged.
+  if [ -f "uv.lock" ] && command -v uv >/dev/null 2>&1; then :
+  elif [ -f "poetry.lock" ] && command -v poetry >/dev/null 2>&1; then :
+  elif command -v pytest >/dev/null 2>&1; then :
+  else
+    FLOOR_GAP="no uv/poetry lockfile and pytest not found — this Python project ships with NO test floor."
   fi
 fi
 

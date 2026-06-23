@@ -41,8 +41,10 @@ process.stdin.on('end', () => {
     const command = input?.tool_input?.command || ''
     const cwd = input?.cwd || process.cwd()
 
-    // Only gate actual commits.
-    if (!/\bgit\b[^&|;]*\bcommit\b/.test(command)) process.exit(0)
+    // Only gate actual commits. Anchor `git` to the start of the command or just
+    // after a separator so "git commit" inside an echo/string/comment isn't
+    // mistaken for a real commit (W7 false-positive block).
+    if (!/(?:^|[&|;])\s*git\b[^&|;]*\bcommit\b/.test(command)) process.exit(0)
 
     // Resolve the repo root + git dir. Not a git repo → nothing to gate.
     let gitDir

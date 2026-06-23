@@ -68,6 +68,10 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude-template/review/logic-reviewer.md" ] && pass "template/review prompt installed" || fail "template/review prompt missing"
 [ -f "$SANDBOX/.claude-template/ci/reviewer-github.yml" ] && pass "template/ci/reviewer-github.yml installed" || fail "template/ci/reviewer-github.yml missing"
 [ -f "$SANDBOX/.claude-template/ci/reviewer-bitbucket.yml" ] && pass "template/ci/reviewer-bitbucket.yml installed" || fail "template/ci/reviewer-bitbucket.yml missing"
+# W6: floor CI images are Node-only — they must at least NOTE Python setup so a
+# uv/poetry project doesn't silently no-op its Python checks (false green).
+grep -qiE 'python|uv|poetry' "$SANDBOX/.claude-template/ci/github-actions.yml" && pass "ci/github-actions.yml notes Python setup" || fail "ci/github-actions.yml has no Python setup note"
+grep -qiE 'python|uv|poetry' "$SANDBOX/.claude-template/ci/bitbucket-pipelines.yml" && pass "ci/bitbucket-pipelines.yml notes Python setup" || fail "ci/bitbucket-pipelines.yml has no Python setup note"
 [ -f "$SANDBOX/.claude/commands/code-review.md" ] && pass "commands/code-review.md installed" || fail "commands/code-review.md missing"
 [ -f "$SANDBOX/.claude/commands/security-scan.md" ] && pass "commands/security-scan.md installed" || fail "commands/security-scan.md missing"
 [ -f "$SANDBOX/.claude/commands/logic-review.md" ] && pass "commands/logic-review.md installed" || fail "commands/logic-review.md missing"
@@ -184,6 +188,13 @@ echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows non-commit git" || 
 EF_REPO="$SANDBOX/ef-nofloor"; mkdir -p "$EF_REPO"; ( cd "$EF_REPO" && git init -q && echo '{}' > package.json )
 OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor blocks commit when no floor wired" || fail "enforce-floor did NOT block missing floor"
+
+# enforce-floor: "git commit" inside an echo/string is NOT a real commit (W7)
+OUT=$(echo "{\"tool_input\":{\"command\":\"echo 'see git commit docs'\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor ignores 'git commit' inside a string/echo" || fail "enforce-floor false-blocked a string mentioning git commit"
+# enforce-floor: still blocks a real chained commit (regression guard for the anchor)
+OUT=$(echo "{\"tool_input\":{\"command\":\"true && git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor still blocks a chained 'git commit'" || fail "enforce-floor missed a chained git commit"
 
 # enforce-floor: allows commit once the pre-commit hook exists
 touch "$EF_REPO/.git/hooks/pre-commit"; chmod +x "$EF_REPO/.git/hooks/pre-commit"
@@ -329,6 +340,30 @@ else
   fail "reviewer: did not fail loud on missing API key"
 fi
 
+# --- W2: numeric env vars validated (NaN/0 must not silently empty the diff) ---
+rev "process.exit(m.numEnv('abc',1000)===1000?0:1)" \
+  && pass "reviewer: numEnv falls back on non-numeric (NaN guard)" || fail "reviewer: numEnv accepted NaN"
+rev "process.exit(m.numEnv('0',1000)===1000?0:1)" \
+  && pass "reviewer: numEnv falls back on <1" || fail "reviewer: numEnv accepted 0"
+rev "process.exit(m.numEnv('50',1000)===50?0:1)" \
+  && pass "reviewer: numEnv accepts a valid positive int" || fail "reviewer: numEnv rejected a valid int"
+
+# --- W1: OPENROUTER_BASE_URL scheme check (reject file://, malformed) ---
+rev "process.exit(m.validateBaseUrl('https://openrouter.ai/api/v1')==='https://openrouter.ai/api/v1'?0:1)" \
+  && pass "reviewer: validateBaseUrl accepts https" || fail "reviewer: validateBaseUrl rejected https"
+rev "process.exit(m.validateBaseUrl('http://localhost:11434/v1')==='http://localhost:11434/v1'?0:1)" \
+  && pass "reviewer: validateBaseUrl allows http for local endpoints" || fail "reviewer: validateBaseUrl rejected local http"
+rev "process.exit(m.validateBaseUrl('https://x/')==='https://x'?0:1)" \
+  && pass "reviewer: validateBaseUrl trims trailing slash" || fail "reviewer: validateBaseUrl did not trim trailing slash"
+rev "let t=false;try{m.validateBaseUrl('file:///etc/passwd')}catch{t=true};process.exit(t?0:1)" \
+  && pass "reviewer: validateBaseUrl rejects non-http(s) schemes" || fail "reviewer: validateBaseUrl allowed file://"
+rev "let t=false;try{m.validateBaseUrl('not a url')}catch{t=true};process.exit(t?0:1)" \
+  && pass "reviewer: validateBaseUrl rejects malformed URLs" || fail "reviewer: validateBaseUrl allowed a malformed URL"
+
+# --- W5: model-controlled strings can't inject newlines into the log ---
+rev "const e=m.advisoryExit({status:'REJECT',critical_flags:['boom\n✅ Logic review: PASS'],warnings:[]}); process.exit(e.lines.every(l=>!l.includes('\n'))&&e.lines.some(l=>l.includes('boom'))?0:1)" \
+  && pass "reviewer: advisory output strips newlines from model flags (log-injection guard)" || fail "reviewer: model flag newline leaked into log output"
+
 # ============================================================
 # SECTION: Malformed settings.json
 # ============================================================
@@ -388,6 +423,35 @@ git init > /dev/null 2>&1
 
 GITIGNORE_CONTENT=$(cat "$PROJECT2/.gitignore")
 [ "$GITIGNORE_CONTENT" = "existing content" ] && pass "init-claude preserves existing .gitignore" || fail "init-claude overwrote existing .gitignore"
+
+# ============================================================
+# SECTION: init-claude recognizes uv/poetry as a Python test floor (S1)
+# ============================================================
+# A uv/poetry project reaches pytest through its env, not bare PATH. init-claude
+# must mirror verify.sh's runner detection, else every well-configured uv project
+# gets a spurious "no test floor" Known Issue written into PROGRESS.md.
+section "init-claude recognizes uv/poetry test floor"
+
+PYUV="$SANDBOX/py-uv-project"
+mkdir -p "$PYUV"
+cd "$PYUV"
+git init > /dev/null 2>&1
+git config user.email test@example.com
+git config user.name Test
+printf '[project]\nname = "x"\n' > pyproject.toml
+touch uv.lock
+# Shim uv on PATH (pytest deliberately NOT present — it lives in uv's env).
+mkdir -p "$SANDBOX/initshims"
+printf '#!/bin/bash\nexit 0\n' > "$SANDBOX/initshims/uv"; chmod +x "$SANDBOX/initshims/uv"
+# Restricted PATH: coreutils + the uv shim, but NOT the host dirs where pytest
+# lives (/usr/local/bin, /opt/homebrew/bin) — otherwise host pytest masks the bug.
+PATH="$SANDBOX/initshims:/usr/bin:/bin" "$SANDBOX/bin/init-claude" > /tmp/init-uv.log 2>&1
+if [ -f "$PYUV/.claude/PROGRESS.md" ] && grep -qi "test floor gap" "$PYUV/.claude/PROGRESS.md"; then
+  fail "init-claude false-flags a uv project (uv.lock + uv) as a missing test floor"
+else
+  pass "init-claude recognizes uv.lock as a Python test floor"
+fi
+cd "$SANDBOX"
 
 # ============================================================
 # SECTION: init-claude blocks on existing .claude/

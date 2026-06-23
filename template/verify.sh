@@ -27,6 +27,8 @@ fail=0
 step() { echo ""; echo "→ $*"; }
 
 # Directories to verify. Default: repo root. Space-separated; opt-in for monorepos.
+# NOTE: space-separated, so an individual path containing a space is unsupported
+# (it would split into two roots and get skipped with a warning) — W3.
 roots=${VERIFY_ROOTS:-.}
 
 node_manager() {   # echo the JS package manager for the cwd, from its lockfile
@@ -38,7 +40,9 @@ node_manager() {   # echo the JS package manager for the cwd, from its lockfile
 }
 
 has_script() {     # $1 = npm script name; true if defined in package.json
-  node -e "process.exit(require('./package.json').scripts?.['$1']?0:1)" 2>/dev/null
+  # Pass the name via env, not string-interpolated into the JS, so a script name
+  # containing a quote can't break the expression or inject code (W4).
+  VERIFY_SCRIPT="$1" node -e "process.exit(require('./package.json').scripts?.[process.env.VERIFY_SCRIPT]?0:1)" 2>/dev/null
 }
 
 py_runner() {      # echo "uv run" / "poetry run" / "" for the cwd

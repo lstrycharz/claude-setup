@@ -35,10 +35,35 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
 
-const MAX_DIFF_LINES = Number(process.env.REVIEW_MAX_DIFF_LINES || 1000);
-const TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS || 120000);
+// Parse a positive-integer env var; fall back on anything non-numeric or < 1.
+// A NaN cap would make capDiff slice [0, NaN] → an EMPTY diff → a false PASS, so
+// bad config must degrade to the default, not silently neuter the review (W2).
+export function numEnv(raw, fallback) {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 ? n : fallback;
+}
+
+const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 1000);
+const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 120000);
 
 export class ReviewError extends Error {}
+
+// Reject anything but http/https so a stray OPENROUTER_BASE_URL can't become a
+// file:// read or some other scheme (W1). Deliberately NOT full SSRF validation:
+// http is allowed so a local Ollama/vLLM endpoint still works. Just scheme sanity
+// + trailing-slash trim.
+export function validateBaseUrl(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new ReviewError(`OPENROUTER_BASE_URL is not a valid URL: ${raw}`);
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new ReviewError(`OPENROUTER_BASE_URL must be http/https, got ${u.protocol}`);
+  }
+  return raw.replace(/\/+$/, '');
+}
 
 // ── Pure, unit-tested core ──────────────────────────────────────────────────
 
@@ -108,14 +133,17 @@ export function parseVerdict(apiJson) {
 // Advisory gate: ALWAYS exit 0. REJECT becomes a loud WARN with the flags; PASS
 // is a quiet OK. This is the single place to change when promoting to blocking.
 export function advisoryExit(verdict) {
+  // Flags come from a model reading an untrusted diff — strip newlines so an
+  // injected "\n✅ Logic review: PASS" can't spoof the CI log tail (W5).
+  const clean = (s) => String(s).replace(/[\r\n]+/g, ' ');
   if (verdict.status === 'REJECT') {
     const lines = [
       '⚠️  ADVISORY — logic reviewer flagged blocking-class issues (NOT blocking the merge yet):',
     ];
-    for (const f of verdict.critical_flags) lines.push(`  - ${f}`);
+    for (const f of verdict.critical_flags) lines.push(`  - ${clean(f)}`);
     if (verdict.warnings.length) {
       lines.push('  warnings:');
-      for (const w of verdict.warnings) lines.push(`  · ${w}`);
+      for (const w of verdict.warnings) lines.push(`  · ${clean(w)}`);
     }
     lines.push('  (advisory-first: gathering false-positive data before this becomes a hard gate.)');
     return { code: 0, level: 'WARN', lines };
@@ -123,7 +151,7 @@ export function advisoryExit(verdict) {
   const lines = ['✅ Logic review: PASS'];
   if (verdict.warnings?.length) {
     lines.push('  warnings (non-blocking):');
-    for (const w of verdict.warnings) lines.push(`  · ${w}`);
+    for (const w of verdict.warnings) lines.push(`  · ${clean(w)}`);
   }
   return { code: 0, level: 'OK', lines };
 }
@@ -131,6 +159,8 @@ export function advisoryExit(verdict) {
 // ── IO shell (thin; not unit-tested) ────────────────────────────────────────
 
 function getDiff() {
+  // REVIEW_DIFF_FILE is a trusted, caller-controlled test hatch (not user input);
+  // the path is read as-is by design (S4).
   if (process.env.REVIEW_DIFF_FILE) {
     return fs.readFileSync(process.env.REVIEW_DIFF_FILE, 'utf8');
   }
@@ -190,7 +220,13 @@ async function main() {
   }
 
   const model = process.env.LOGIC_REVIEWER_MODEL || 'google/gemini-2.5-pro';
-  const base = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+  let base;
+  try {
+    base = validateBaseUrl(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1');
+  } catch (err) {
+    console.error(`❌ ${err.message}`);
+    process.exit(1); // catastrophic config error, same class as a missing key
+  }
   const payload = buildPayload({ systemPrompt: loadPrompt(), diff, model });
 
   let apiJson;
