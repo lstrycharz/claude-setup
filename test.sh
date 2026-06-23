@@ -291,6 +291,16 @@ run_verify "$R" "backend frontend"
 grep -q '^uv run' "$SHIMLOG"   && pass "verify: VERIFY_ROOTS runs the backend (uv) suite" || fail "verify: skipped backend suite under VERIFY_ROOTS"
 grep -q '^pnpm '  "$SHIMLOG"   && pass "verify: VERIFY_ROOTS runs the frontend (pnpm) suite" || fail "verify: skipped frontend suite under VERIFY_ROOTS"
 
+# --- #1: a code stack with no test floor hard-fails, unless explicitly opted out ---
+reset_shims; mkshim npm
+R="$SANDBOX/v-notest"; mkdir -p "$R"
+printf '{ "scripts": { "lint": "x" } }\n' > "$R/package.json"   # lint only, no test script
+run_verify "$R"; rc=$?
+[ "$rc" -ne 0 ] && pass "verify: missing test floor hard-fails (blocks)" || fail "verify: missing test floor passed — should block"
+mkdir -p "$R/.claude"; touch "$R/.claude/verify.allow-no-tests"   # deliberate, visible opt-out
+run_verify "$R"; rc=$?
+[ "$rc" -eq 0 ] && pass "verify: .claude/verify.allow-no-tests opts out of the hard-fail" || fail "verify: opt-out marker did not pass"
+
 # ============================================================
 # SECTION: cross-vendor logic reviewer (review-diff.mjs)
 # ============================================================

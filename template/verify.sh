@@ -18,6 +18,8 @@
 #     hit the venv, never a global pytest that collects 0 tests and reports green.
 #   - Monorepos opt in explicitly via VERIFY_ROOTS (no magic tree-walking, which
 #     wanders into node_modules/.venv):  VERIFY_ROOTS="backend frontend"
+#   - A code stack with NO test runner is a hard failure (not just a warning) —
+#     accept the gap deliberately with a marker file:  .claude/verify.allow-no-tests
 #
 # Exit 0 = green (safe). Non-zero = blocked. init-claude auto-detects your stack;
 # edit freely for your project.
@@ -30,6 +32,22 @@ step() { echo ""; echo "→ $*"; }
 # NOTE: space-separated, so an individual path containing a space is unsupported
 # (it would split into two roots and get skipped with a warning) — W3.
 roots=${VERIFY_ROOTS:-.}
+
+# "No tests" is a floor violation, not a default — a repo can otherwise pass the
+# gate by simply never having tests (the exact gap the floor exists to close).
+# Hard-fail when a code stack has no test runner, UNLESS the gap is accepted
+# deliberately and visibly via a marker file (an owned decision, not a silent
+# skip). Resolved once here at the repo root, before any per-root `cd`.
+ALLOW_NO_TESTS=0
+[ -f .claude/verify.allow-no-tests ] && ALLOW_NO_TESTS=1
+no_test_floor() { # called when a stack has no tests; warns, and fails unless opted out
+  if [ "$ALLOW_NO_TESTS" -eq 1 ]; then
+    echo "    (accepted: .claude/verify.allow-no-tests present — passing without a test floor.)"
+  else
+    echo "    BLOCKED: create .claude/verify.allow-no-tests to accept this gap deliberately."
+    fail=1
+  fi
+}
 
 node_manager() {   # echo the JS package manager for the cwd, from its lockfile
   if   [ -f pnpm-lock.yaml ]; then echo pnpm
@@ -68,6 +86,7 @@ verify_node() {
     echo ""
     echo "⚠️  NO 'test' SCRIPT in package.json — this project has no test floor."
     echo "    Wire a test runner or explicitly accept the gap with the user (qa.md)."
+    no_test_floor
   fi
 }
 
@@ -89,6 +108,7 @@ verify_python() {
     else
       echo ""
       echo "⚠️  no uv/poetry lockfile and pytest not on PATH — Python project has no test floor (see qa.md)."
+      no_test_floor
     fi
   fi
 }
