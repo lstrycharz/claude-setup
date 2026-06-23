@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      COMMENT_FILE: ${{ runner.temp }}/logic-review.md
+      COMMENT_FILE: ${{ github.workspace }}/logic-review.md
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,7 +28,7 @@ jobs:
         if: ${{ env.OPENROUTER_API_KEY != '' }} # skip until the secret is set
         env:
           REVIEW_BASE_REF: origin/${{ github.base_ref }}
-          REVIEW_COMMENT_FILE: ${{ runner.temp }}/logic-review.md
+          REVIEW_COMMENT_FILE: ${{ github.workspace }}/logic-review.md
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
           node template/bin/review-diff.mjs
