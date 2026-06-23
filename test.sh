@@ -390,6 +390,10 @@ rev "process.exit(m.isModelError(400,'deepseek/x is not a valid model ID')===tru
   && pass "reviewer: isModelError flags a 400 'not a valid model' as a model problem" || fail "reviewer: isModelError missed an invalid-model 400"
 rev "process.exit(m.isModelError(404,'model not found')===true?0:1)" \
   && pass "reviewer: isModelError flags a 404 model-not-found" || fail "reviewer: isModelError missed a 404 model error"
+rev "process.exit(m.isModelError(403,'this model requires a different plan')===true?0:1)" \
+  && pass "reviewer: isModelError flags a 403 model-gated error" || fail "reviewer: isModelError missed a 403 model error"
+rev "process.exit(m.isModelError(403,'invalid api key')===false?0:1)" \
+  && pass "reviewer: isModelError ignores a 403 with no model mention (auth, not model)" || fail "reviewer: isModelError misclassified an auth 403"
 rev "process.exit(m.isModelError(500,'internal server error')===false?0:1)" \
   && pass "reviewer: isModelError does NOT treat a 500 as a model problem" || fail "reviewer: isModelError misclassified a 500"
 rev "const c=m.renderModelWarning('deepseek/deepseek-v4-pro','not a valid model ID'); process.exit(c.includes('deepseek/deepseek-v4-pro')&&c.includes('LOGIC_REVIEWER_MODEL')&&c.includes('logic-reviewer')?0:1)" \

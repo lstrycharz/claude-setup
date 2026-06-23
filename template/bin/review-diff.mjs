@@ -183,7 +183,10 @@ export function renderComment(verdict, { truncated = false } = {}) {
 // Is an OpenRouter error an unknown/deprecated-model problem (a 4xx whose body
 // mentions the model, e.g. "... is not a valid model ID") vs a 5xx/network blip?
 export function isModelError(status, bodyText) {
-  if (status !== 400 && status !== 404) return false;
+  // 400/404 = unknown/invalid model; 403 can mean a model gated behind a plan.
+  // Require the body to actually mention the model, so a plain auth/credits 403
+  // isn't misread as a model problem.
+  if (status !== 400 && status !== 403 && status !== 404) return false;
   return /model/i.test(String(bodyText || ''));
 }
 

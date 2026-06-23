@@ -35,6 +35,9 @@ jobs:
           node template/bin/review-diff.mjs
       - name: Post findings to the PR
         if: always()
+        # Posting can fail on a fork PR (GITHUB_TOKEN is read-only there) — never
+        # let that red the check; the reviewer is advisory and must not block.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
