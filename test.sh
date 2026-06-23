@@ -64,6 +64,10 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude-template/verify.sh" ] && pass "template/verify.sh installed" || fail "template/verify.sh missing"
 [ -f "$SANDBOX/.claude-template/ci/github-actions.yml" ] && pass "template/ci installed" || fail "template/ci missing"
 [ -f "$SANDBOX/.claude-template/configs/eslint.config.mjs.tpl" ] && pass "template/configs installed" || fail "template/configs missing"
+[ -f "$SANDBOX/.claude-template/bin/review-diff.mjs" ] && pass "template/bin/review-diff.mjs installed" || fail "template/bin/review-diff.mjs missing"
+[ -f "$SANDBOX/.claude-template/review/logic-reviewer.md" ] && pass "template/review prompt installed" || fail "template/review prompt missing"
+[ -f "$SANDBOX/.claude-template/ci/reviewer-github.yml" ] && pass "template/ci/reviewer-github.yml installed" || fail "template/ci/reviewer-github.yml missing"
+[ -f "$SANDBOX/.claude-template/ci/reviewer-bitbucket.yml" ] && pass "template/ci/reviewer-bitbucket.yml installed" || fail "template/ci/reviewer-bitbucket.yml missing"
 [ -f "$SANDBOX/.claude/commands/code-review.md" ] && pass "commands/code-review.md installed" || fail "commands/code-review.md missing"
 [ -f "$SANDBOX/.claude/commands/security-scan.md" ] && pass "commands/security-scan.md installed" || fail "commands/security-scan.md missing"
 [ -f "$SANDBOX/.claude/agents/code-reviewer.md" ] && pass "agents/code-reviewer.md installed" || fail "agents/code-reviewer.md missing"
@@ -271,6 +275,58 @@ touch "$R/frontend/pnpm-lock.yaml"
 run_verify "$R" "backend frontend"
 grep -q '^uv run' "$SHIMLOG"   && pass "verify: VERIFY_ROOTS runs the backend (uv) suite" || fail "verify: skipped backend suite under VERIFY_ROOTS"
 grep -q '^pnpm '  "$SHIMLOG"   && pass "verify: VERIFY_ROOTS runs the frontend (pnpm) suite" || fail "verify: skipped frontend suite under VERIFY_ROOTS"
+
+# ============================================================
+# SECTION: cross-vendor logic reviewer (review-diff.mjs)
+# ============================================================
+# The reviewer's logic lives in pure, exported functions; the network call is a
+# thin IO shell. We unit-test the pure core by importing it (no API, no toolchain)
+# and exercise the one catastrophic path (missing key) through the binary itself.
+section "cross-vendor logic reviewer"
+
+REV="$SCRIPT_DIR/template/bin/review-diff.mjs"
+# Import the module and run a snippet of JS against it; exit code = the assertion.
+rev() { node --input-type=module -e "const m=await import('file://$REV'); $1" 2>/dev/null; }
+
+# --- payload safety: temperature 0, JSON mode, untrusted-data framing ---
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit(p.temperature===0?0:1)" \
+  && pass "reviewer: payload pins temperature 0" || fail "reviewer: payload does not pin temperature 0"
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit(p.response_format?.type==='json_object'?0:1)" \
+  && pass "reviewer: payload requests JSON output mode" || fail "reviewer: payload does not request JSON mode"
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'DIFFBODY',model:'x'}); const u=p.messages.find(x=>x.role==='user').content; process.exit(u.includes('UNTRUSTED')&&u.includes('DIFFBODY')?0:1)" \
+  && pass "reviewer: diff is framed as untrusted data (injection guard)" || fail "reviewer: diff not framed as untrusted data"
+
+# --- diff cap (cost/context budget) ---
+rev "const big=Array.from({length:50},(_,i)=>'L'+i).join('\n'); const r=m.capDiff(big,10); process.exit(r.truncated&&r.text.split('\n').length<=12?0:1)" \
+  && pass "reviewer: capDiff truncates oversized diffs" || fail "reviewer: capDiff did not truncate"
+rev "const r=m.capDiff('a\nb',1000); process.exit(!r.truncated&&r.text==='a\nb'?0:1)" \
+  && pass "reviewer: capDiff leaves small diffs intact" || fail "reviewer: capDiff altered a small diff"
+
+# --- verdict parsing (structured output, not regex) ---
+rev "const v=m.parseVerdict({choices:[{message:{content:JSON.stringify({status:'PASS',critical_flags:[],warnings:[]})}}]}); process.exit(v.status==='PASS'?0:1)" \
+  && pass "reviewer: parses a PASS verdict" || fail "reviewer: failed to parse PASS verdict"
+rev "const v=m.parseVerdict({choices:[{message:{content:JSON.stringify({status:'REJECT',critical_flags:['boom'],warnings:[]})}}]}); process.exit(v.status==='REJECT'&&v.critical_flags[0]==='boom'?0:1)" \
+  && pass "reviewer: parses a REJECT verdict with critical flags" || fail "reviewer: failed to parse REJECT verdict"
+rev "const v=m.parseVerdict({choices:[{message:{tool_calls:[{function:{arguments:JSON.stringify({status:'PASS'})}}]}}]}); process.exit(v.status==='PASS'?0:1)" \
+  && pass "reviewer: parses tool-call arguments when content is empty" || fail "reviewer: failed to parse tool-call arguments"
+rev "let t=false; try{m.parseVerdict({choices:[{message:{content:'not json at all'}}]})}catch{t=true} process.exit(t?0:1)" \
+  && pass "reviewer: malformed model output throws (not silently passed)" || fail "reviewer: malformed output did not throw"
+
+# --- advisory gate: REJECT must NOT block ---
+rev "const e=m.advisoryExit({status:'REJECT',critical_flags:['x'],warnings:[]}); process.exit(e.code===0?0:1)" \
+  && pass "reviewer: advisory mode never blocks on REJECT (exit 0)" || fail "reviewer: advisory REJECT did not exit 0"
+rev "const e=m.advisoryExit({status:'REJECT',critical_flags:['boomflag'],warnings:[]}); process.exit(e.level==='WARN'&&e.lines.join(' ').includes('boomflag')?0:1)" \
+  && pass "reviewer: advisory REJECT logs a loud warning with the flags" || fail "reviewer: advisory REJECT did not surface flags"
+rev "const e=m.advisoryExit({status:'PASS',critical_flags:[],warnings:[]}); process.exit(e.code===0&&e.level==='OK'?0:1)" \
+  && pass "reviewer: PASS exits 0 (OK)" || fail "reviewer: PASS did not exit 0/OK"
+
+# --- catastrophic path: missing API key fails loud (the one non-zero exit) ---
+OUT=$(OPENROUTER_API_KEY="" node "$REV" </dev/null 2>&1; echo "EXIT:$?")
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -q "OPENROUTER_API_KEY"; then
+  pass "reviewer: exits 1 with a key-missing message (catastrophic config error)"
+else
+  fail "reviewer: did not fail loud on missing API key"
+fi
 
 # ============================================================
 # SECTION: Malformed settings.json

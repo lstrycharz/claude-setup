@@ -47,9 +47,11 @@ cp "$SCRIPT_DIR/template/dot-gitignore" ~/.claude-template/.gitignore
 cp "$SCRIPT_DIR/template/.project-gitignore" ~/.claude-template/
 cp "$SCRIPT_DIR/template/.pre-commit-hook" ~/.claude-template/
 cp "$SCRIPT_DIR/template/verify.sh" ~/.claude-template/
-mkdir -p ~/.claude-template/ci ~/.claude-template/configs
+mkdir -p ~/.claude-template/ci ~/.claude-template/configs ~/.claude-template/bin ~/.claude-template/review
 cp "$SCRIPT_DIR/template/ci/"* ~/.claude-template/ci/
 cp "$SCRIPT_DIR/template/configs/"* ~/.claude-template/configs/
+cp "$SCRIPT_DIR/template/bin/"* ~/.claude-template/bin/
+cp "$SCRIPT_DIR/template/review/"* ~/.claude-template/review/
 
 # 3. CLI tools → ~/bin/
 echo "→ Installing init-claude to ~/bin/"

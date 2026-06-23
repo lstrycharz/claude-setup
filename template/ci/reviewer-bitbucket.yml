@@ -1,0 +1,28 @@
+# Cross-vendor logic review (ADVISORY) — Bitbucket Pipelines.
+#
+# An independent second-vendor model reviews the PR diff for semantic / security
+# flaws that lint + type-checking can't catch. This is the "smart review" layer
+# that sits ON TOP of the deterministic floor (verify.sh) — it is intentionally
+# NOT part of it.
+#
+# ADVISORY-FIRST: review-diff.mjs logs findings but exits 0 — it does NOT block
+# the merge while we gather false-positive + prompt-injection data. The only
+# non-zero exit is a missing OPENROUTER_API_KEY, so a misconfigured gate is
+# visible instead of silently no-op-ing.
+#
+# Setup:
+#   1. Copy to repo root as bitbucket-pipelines.yml (or merge this step into an
+#      existing one — it can run alongside the verify.sh floor step).
+#   2. Add OPENROUTER_API_KEY as a SECURED repository variable
+#      (Repository settings → Repository variables).
+#   3. Optional: set LOGIC_REVIEWER_MODEL to pin a specific cross-vendor model.
+image: node:22
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          name: logic-review (advisory)
+          script:
+            # PR builds are shallow — make sure the base ref exists for the diff.
+            - git fetch origin main:refs/remotes/origin/main
+            - node .claude/bin/review-diff.mjs
