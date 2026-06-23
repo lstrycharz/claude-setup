@@ -191,6 +191,88 @@ OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_DOCS
 echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows commit in non-code repo" || fail "enforce-floor wrongly blocked non-code repo"
 
 # ============================================================
+# SECTION: verify.sh stack & runner detection
+# ============================================================
+# These run verify.sh against synthetic repos with PATH-shimmed package
+# managers (fake pnpm/uv/poetry/npm that just log + exit 0). We assert which
+# runner verify.sh reached for — no real toolchain required. The contract:
+#   - pick the Node manager from the lockfile (false-green if npm runs a pnpm tree)
+#   - run Python tools THROUGH the env (uv run / poetry run), never bare on $PATH
+#     (a global pytest collecting 0 tests outside the venv is a silent false-green)
+#   - honour VERIFY_ROOTS so a backend/+frontend/ monorepo gets BOTH suites run
+section "verify.sh stack & runner detection"
+
+VERIFY="$SCRIPT_DIR/template/verify.sh"
+SHIMDIR="$SANDBOX/shims"
+SHIMLOG="$SANDBOX/shim.log"
+
+# Fake executable that records "name + args" and exits 0
+mkshim() {
+  cat > "$SHIMDIR/$1" <<EOF
+#!/bin/bash
+echo "$1 \$*" >> "$SHIMLOG"
+exit 0
+EOF
+  chmod +x "$SHIMDIR/$1"
+}
+reset_shims() { rm -rf "$SHIMDIR"; mkdir -p "$SHIMDIR"; : > "$SHIMLOG"; }
+run_verify() { # $1=repo dir, $2=VERIFY_ROOTS (optional)
+  ( cd "$1" && PATH="$SHIMDIR:$PATH" VERIFY_ROOTS="${2:-.}" bash "$VERIFY" >/dev/null 2>&1 )
+}
+
+# --- Node: pnpm-lock.yaml → pnpm, not npm ---
+reset_shims; mkshim pnpm; mkshim npm
+R="$SANDBOX/v-pnpm"; mkdir -p "$R"
+printf '{ "scripts": { "lint": "x", "test": "x" } }\n' > "$R/package.json"
+touch "$R/pnpm-lock.yaml"
+run_verify "$R"
+grep -q '^pnpm ' "$SHIMLOG" && pass "verify: uses pnpm when pnpm-lock.yaml present" || fail "verify: did not use pnpm for a pnpm repo"
+grep -q '^npm '  "$SHIMLOG" && fail "verify: fell back to npm despite pnpm-lock.yaml" || pass "verify: does not invoke npm when pnpm is the manager"
+
+# --- Node: no lockfile → npm default ---
+reset_shims; mkshim pnpm; mkshim npm
+R="$SANDBOX/v-npm"; mkdir -p "$R"
+printf '{ "scripts": { "test": "x" } }\n' > "$R/package.json"
+run_verify "$R"
+grep -q '^npm '  "$SHIMLOG" && pass "verify: defaults to npm when no lockfile" || fail "verify: did not default to npm"
+
+# --- Node: yarn.lock → yarn ---
+reset_shims; mkshim yarn; mkshim npm
+R="$SANDBOX/v-yarn"; mkdir -p "$R"
+printf '{ "scripts": { "test": "x" } }\n' > "$R/package.json"
+touch "$R/yarn.lock"
+run_verify "$R"
+grep -q '^yarn ' "$SHIMLOG" && pass "verify: uses yarn when yarn.lock present" || fail "verify: did not use yarn for a yarn repo"
+
+# --- Python: uv.lock → 'uv run', never bare pytest ---
+reset_shims; mkshim uv; mkshim pytest; mkshim ruff; mkshim mypy
+R="$SANDBOX/v-uv"; mkdir -p "$R"
+printf '[project]\nname = "x"\n' > "$R/pyproject.toml"
+touch "$R/uv.lock"
+run_verify "$R"
+grep -q '^uv run'  "$SHIMLOG" && pass "verify: runs Python tools via 'uv run' when uv.lock present" || fail "verify: did not use 'uv run' for a uv project"
+grep -q '^pytest ' "$SHIMLOG" && fail "verify: ran bare pytest (false-green risk) despite uv.lock" || pass "verify: does not run bare pytest when uv is the runner"
+
+# --- Python: poetry.lock → 'poetry run' ---
+reset_shims; mkshim poetry; mkshim pytest
+R="$SANDBOX/v-poetry"; mkdir -p "$R"
+printf '[tool.poetry]\nname = "x"\n' > "$R/pyproject.toml"
+touch "$R/poetry.lock"
+run_verify "$R"
+grep -q '^poetry run' "$SHIMLOG" && pass "verify: runs Python tools via 'poetry run' when poetry.lock present" || fail "verify: did not use 'poetry run' for a poetry project"
+
+# --- Monorepo: VERIFY_ROOTS runs BOTH sub-stacks (Gap 1) ---
+reset_shims; mkshim uv; mkshim pnpm; mkshim pytest; mkshim npm
+R="$SANDBOX/v-mono"; mkdir -p "$R/backend" "$R/frontend"
+printf '[project]\nname = "x"\n' > "$R/backend/pyproject.toml"
+touch "$R/backend/uv.lock"
+printf '{ "scripts": { "test": "x" } }\n' > "$R/frontend/package.json"
+touch "$R/frontend/pnpm-lock.yaml"
+run_verify "$R" "backend frontend"
+grep -q '^uv run' "$SHIMLOG"   && pass "verify: VERIFY_ROOTS runs the backend (uv) suite" || fail "verify: skipped backend suite under VERIFY_ROOTS"
+grep -q '^pnpm '  "$SHIMLOG"   && pass "verify: VERIFY_ROOTS runs the frontend (pnpm) suite" || fail "verify: skipped frontend suite under VERIFY_ROOTS"
+
+# ============================================================
 # SECTION: Malformed settings.json
 # ============================================================
 section "Malformed settings.json recovery"

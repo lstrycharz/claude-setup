@@ -38,6 +38,14 @@ Every project gets one `.claude/verify.sh` — **the single source of truth for 
 
 `init-claude` auto-detects your stack, drops starter ESLint / TS / Prettier / ruff configs, and **loudly flags a missing test framework** (writing it into `PROGRESS.md`) instead of letting untested code ship silently. The rule: gates the machine enforces, not instructions a human has to remember.
 
+`verify.sh` picks the Node manager from the lockfile (pnpm / yarn / bun / npm) and runs Python tools through the project env (`uv run` / `poetry run`) — so it never false-greens by running `npm` against a pnpm tree or a global `pytest` that collects nothing. **Monorepos** (e.g. a Python backend + Node frontend in one repo) opt in explicitly — point it at each sub-project and it runs and accumulates every suite:
+
+```bash
+VERIFY_ROOTS="backend frontend" .claude/verify.sh
+```
+
+Defaults to the repo root; the opt-in is one line, not magic directory-walking.
+
 ### Slash Commands (on-demand checks)
 
 Type these in Claude Code whenever you want a second opinion:
