@@ -46,12 +46,28 @@ VERIFY_ROOTS="backend frontend" .claude/verify.sh
 
 Defaults to the repo root; the opt-in is one line, not magic directory-walking.
 
+If a code project has **no test runner at all**, `verify.sh` now *blocks* rather than just warning — closing the "passes because it has no tests" gap that the floor exists to prevent. Accept the gap deliberately (a config repo, a scratch spike) with a marker file: `.claude/verify.allow-no-tests`.
+
+### The cross-vendor reviewer (a second opinion)
+
+The floor catches code that's *mechanically* wrong (won't lint, won't typecheck, fails tests). It can't catch code that's *designed* wrong — a swallowed error, a missing timeout, an unvalidated input crossing a trust boundary. So there's a second layer: an independent **different-vendor** AI (DeepSeek by default, via OpenRouter — deliberately not Claude, so it doesn't share Claude's blind spots) reads each PR's diff and flags semantic and security risks.
+
+It is **advisory** — it posts its findings as a comment on the PR and **never blocks the merge**. A probabilistic reviewer can be wrong (and will occasionally raise a confident false alarm), so it advises rather than gates. You — or `/logic-review` — verify each flag and fix the real ones. The deterministic floor stays the thing that actually blocks.
+
+To turn it on in a project:
+1. Copy `.claude/ci/reviewer-github.yml` into `.github/workflows/` (or the Bitbucket variant).
+2. Add an `OPENROUTER_API_KEY` repository secret.
+3. *(Optional)* set `LOGIC_REVIEWER_MODEL` to pick a different model.
+
+If the configured model is ever deprecated, the reviewer says so on the PR instead of failing silently.
+
 ### Slash Commands (on-demand checks)
 
 Type these in Claude Code whenever you want a second opinion:
 
 - **`/code-review`** — Reviews everything you've changed but haven't committed yet. Finds bugs, security issues, and style problems. Like having a senior dev look over your shoulder.
 - **`/security-scan`** — Scans your whole project for security vulnerabilities (leaked secrets, injection risks, auth problems). Based on the OWASP Top 10.
+- **`/logic-review`** — Runs the cross-vendor reviewer on your current changes, then fixes the *real* findings with you reviewing each step (RED-green, surgical, never auto-commits).
 
 ### Progress Tracking (the memory)
 
@@ -121,7 +137,7 @@ You start Claude Code
     ├── Claude reads CLAUDE.md        → knows WHAT this project is
     ├── Claude reads PROGRESS.md      → knows WHERE it left off
     ├── Hooks run in background       → prevent mistakes silently
-    └── /code-review, /security-scan  → available when you want them
+    └── /code-review, /security-scan, /logic-review → available when you want them
 ```
 
 ## What's in the Box
@@ -142,10 +158,12 @@ claude-setup/
 ├── hooks/                     # Automatic safety guardrails
 │   ├── config-protection.mjs  # Don't let Claude weaken your linter rules
 │   ├── block-no-verify.mjs    # Don't let Claude skip pre-commit hooks
+│   ├── enforce-floor.mjs      # Don't let Claude commit a code repo with no floor
 │   └── suggest-compact.mjs    # Remind Claude to save progress and free memory
 ├── commands/                  # Slash commands you can run on demand
 │   ├── code-review.md         # /code-review
-│   └── security-scan.md       # /security-scan
+│   ├── security-scan.md       # /security-scan
+│   └── logic-review.md        # /logic-review (cross-vendor review + supervised fix)
 ├── agents/                    # Specialized sub-agents
 │   ├── code-reviewer.md       # Reviews code with fresh eyes (used by /code-review)
 │   └── security-reviewer.md   # Scans for vulnerabilities (used by /security-scan)
@@ -153,15 +171,22 @@ claude-setup/
 │   ├── CLAUDE.md              # Project instructions (auto-filled after first plan)
 │   ├── CLAUDE.local.md        # Your personal preferences (not shared with team)
 │   ├── PROGRESS.md            # Cross-session progress tracking
+│   ├── verify.sh              # The deterministic floor (lint + typecheck + test)
 │   ├── settings.json          # Blocks Claude from reading .env files and secrets
 │   ├── settings.local.json    # Your personal command overrides
 │   ├── .project-gitignore     # Blocks secrets, keys, credentials from git
-│   └── .pre-commit-hook       # Scans commits for leaked secrets
+│   ├── .pre-commit-hook       # Scans commits for leaked secrets
+│   ├── bin/review-diff.mjs    # The cross-vendor logic reviewer (advisory)
+│   ├── review/                # The reviewer's prompt / rubric
+│   ├── ci/                    # CI templates: floor + reviewer (GitHub & Bitbucket)
+│   └── configs/               # Starter eslint / tsconfig / prettier / ruff
 ├── bin/
 │   └── init-claude            # The command that sets up a new project
 ├── install.sh                 # The command that sets up a new computer
 ├── uninstall.sh               # Safely removes everything this setup installed
-├── test.sh                    # Automated test suite (47 assertions, runs in sandbox)
+├── verify.sh                  # This repo's own floor — it gates its own PRs
+├── .github/workflows/         # Runs the floor + reviewer on this repo's own PRs
+├── test.sh                    # Automated test suite (114 assertions, runs in sandbox)
 ├── Dockerfile                 # Ubuntu container for cross-platform testing
 ├── docker-test.sh             # Runs test.sh in the Docker container
 └── TESTING.md                 # Manual scenario checklist for coworker validation
