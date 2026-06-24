@@ -54,12 +54,16 @@ The floor catches code that's *mechanically* wrong (won't lint, won't typecheck,
 
 It is **advisory** — it posts its findings as a comment on the PR and **never blocks the merge**. A probabilistic reviewer can be wrong (and will occasionally raise a confident false alarm), so it advises rather than gates. You — or `/logic-review` — verify each flag and fix the real ones. The deterministic floor stays the thing that actually blocks.
 
-To turn it on in a project:
-1. Copy `.claude/ci/reviewer-github.yml` into `.github/workflows/` (or the Bitbucket variant).
-2. Add an `OPENROUTER_API_KEY` repository secret.
-3. *(Optional)* set `LOGIC_REVIEWER_MODEL` to pick a different model.
+**Setting it up (GitHub):**
 
-If the configured model is ever deprecated, the reviewer says so on the PR instead of failing silently.
+1. **Get an OpenRouter key.** Sign up at [openrouter.ai](https://openrouter.ai), add a little credit, and create an API key. (OpenRouter is one gateway to many models — Claude, GPT, Gemini, DeepSeek — so you can switch models without changing code.)
+2. **Add the workflow.** Copy `.claude/ci/reviewer-github.yml` into your repo's `.github/workflows/` folder and commit it.
+3. **Add the key as a secret.** In GitHub: **your repo → Settings → Secrets and variables → Actions → New repository secret**. Name it exactly `OPENROUTER_API_KEY` and paste your key. It must be a **repository** secret — *not* an Environment secret (the workflow won't see an environment secret).
+4. **(Optional) pick the model.** The default is `deepseek/deepseek-chat` (cheap and solid for a second opinion). To use another, add a repository **variable** (same screen → *Variables* tab) named `LOGIC_REVIEWER_MODEL` — e.g. `google/gemini-2.5-pro`, `openai/gpt-5`, `anthropic/claude-sonnet-4-6`. Any ID from [openrouter.ai/models](https://openrouter.ai/models) works.
+
+Open a pull request and the reviewer posts its findings as a comment. If the model you picked is ever retired, it says so on the PR instead of failing silently.
+
+> **Run it locally too:** `OPENROUTER_API_KEY=sk-... node .claude/bin/review-diff.mjs` reviews your current branch from the terminal. Point `OPENROUTER_BASE_URL` at a local Ollama/vLLM endpoint to run it free and offline.
 
 ### Slash Commands (on-demand checks)
 
@@ -181,7 +185,8 @@ claude-setup/
 │   ├── ci/                    # CI templates: floor + reviewer (GitHub & Bitbucket)
 │   └── configs/               # Starter eslint / tsconfig / prettier / ruff
 ├── bin/
-│   └── init-claude            # The command that sets up a new project
+│   ├── init-claude            # The command that sets up a new project
+│   └── update-claude          # Upgrades an existing project's .claude/ to the latest
 ├── install.sh                 # The command that sets up a new computer
 ├── uninstall.sh               # Safely removes everything this setup installed
 ├── verify.sh                  # This repo's own floor — it gates its own PRs

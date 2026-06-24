@@ -1,0 +1,68 @@
+#!/bin/bash
+# update-claude — upgrade an EXISTING project's .claude/ to the latest template.
+#
+# init-claude scaffolds a NEW project and refuses to touch an existing .claude/.
+# This is the other half: it refreshes the infrastructure files in place while
+# never clobbering the files you customize.
+#
+# Reads from ~/.claude-template — keep it current by re-running ./install.sh from
+# the claude-setup repo before you update your projects.
+#
+# Updates (overwrites — these are infrastructure, not meant to be hand-edited):
+#   .claude/bin/        the cross-vendor reviewer (review-diff.mjs)
+#   .claude/review/     the reviewer's prompt / rubric
+#   .claude/ci/         CI templates (floor + reviewer)
+#   .claude/configs/    starter eslint / tsconfig / prettier / ruff templates
+#
+# Adds only if missing (never overwrites your customizations):
+#   .claude/verify.sh       you edit this for your project's real commands
+#   .git/hooks/pre-commit   the secret-scan + floor hook
+#
+# Never touches: CLAUDE.md, CLAUDE.local.md, PROGRESS.md, settings*.json, your code.
+
+TEMPLATE="$HOME/.claude-template"
+
+if [ ! -d "$TEMPLATE" ]; then
+  echo "❌ Template not found at $TEMPLATE"
+  echo "   Run ./install.sh from the claude-setup repo first."
+  exit 1
+fi
+
+if [ ! -d ".claude" ]; then
+  echo "❌ No .claude/ in this project — nothing to update."
+  echo "   For a NEW project, run: init-claude"
+  exit 1
+fi
+
+echo "→ Updating .claude/ from $TEMPLATE"
+
+# 1. Infrastructure — overwrite (ours; carries bug fixes + prompt improvements).
+for sub in bin review ci configs; do
+  if [ -d "$TEMPLATE/$sub" ]; then
+    mkdir -p ".claude/$sub"
+    cp "$TEMPLATE/$sub/"* ".claude/$sub/" 2>/dev/null
+    echo "  ✓ .claude/$sub/ updated"
+  fi
+done
+
+# 2. verify.sh — you customize this; only restore if it's gone.
+if [ ! -f ".claude/verify.sh" ]; then
+  cp "$TEMPLATE/verify.sh" .claude/verify.sh
+  chmod +x .claude/verify.sh
+  echo "  ✓ .claude/verify.sh restored (was missing) — edit it for your commands"
+else
+  echo "  • .claude/verify.sh kept (yours) — diff against $TEMPLATE/verify.sh for new options"
+fi
+
+# 3. pre-commit hook — add only if missing (don't clobber a customized one).
+if [ -d ".git" ] && [ ! -f ".git/hooks/pre-commit" ]; then
+  cp "$TEMPLATE/.pre-commit-hook" .git/hooks/pre-commit
+  chmod +x .git/hooks/pre-commit
+  echo "  ✓ .git/hooks/pre-commit installed (was missing)"
+fi
+
+echo ""
+echo "✅ .claude/ updated. Review the changes with:  git diff"
+echo "   Untouched: CLAUDE.md, PROGRESS.md, settings.local.json, your code."
+echo "   To enable the cross-vendor reviewer in CI, copy .claude/ci/reviewer-github.yml"
+echo "   into .github/workflows/ (see README → 'Setting it up')."

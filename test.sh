@@ -81,6 +81,7 @@ grep -qiE 'python|uv|poetry' "$SANDBOX/.claude-template/ci/bitbucket-pipelines.y
 [ -f "$SANDBOX/.claude/agents/code-reviewer.md" ] && pass "agents/code-reviewer.md installed" || fail "agents/code-reviewer.md missing"
 [ -f "$SANDBOX/.claude/agents/security-reviewer.md" ] && pass "agents/security-reviewer.md installed" || fail "agents/security-reviewer.md missing"
 [ -x "$SANDBOX/bin/init-claude" ] && pass "bin/init-claude installed and executable" || fail "bin/init-claude missing or not executable"
+[ -x "$SANDBOX/bin/update-claude" ] && pass "bin/update-claude installed and executable" || fail "bin/update-claude missing or not executable"
 
 # Test 2: Settings merge (fresh)
 SETTINGS="$SANDBOX/.claude/settings.json"
@@ -514,6 +515,40 @@ else
 fi
 
 # ============================================================
+# SECTION: update-claude (upgrade an existing project)
+# ============================================================
+# Updates the infrastructure files (reviewer code/prompt, ci, configs) in place,
+# but never clobbers files you customize (verify.sh, CLAUDE.md, settings.local).
+section "update-claude upgrades an existing project"
+
+# Blocks where there is no .claude/ (that's init-claude's job, not this).
+UC_NONE="$SANDBOX/uc-no-claude"; mkdir -p "$UC_NONE"
+if ( cd "$UC_NONE" && "$SANDBOX/bin/update-claude" ) > /tmp/uc-none.log 2>&1; then
+  fail "update-claude ran without a .claude/ (should block)"
+else
+  pass "update-claude blocks when there is no .claude/"
+fi
+
+cd "$PROJECT"   # has .claude/ scaffolded from the init-claude tests
+# Refreshes infrastructure files (overwrites stale reviewer code + prompt).
+echo "OLD-SENTINEL" > .claude/bin/review-diff.mjs
+echo "OLD-PROMPT"   > .claude/review/logic-reviewer.md
+"$SANDBOX/bin/update-claude" > /tmp/uc-run.log 2>&1
+grep -q "OLD-SENTINEL" .claude/bin/review-diff.mjs && fail "update-claude did not refresh review-diff.mjs" || pass "update-claude refreshes the reviewer code"
+grep -q "OLD-PROMPT" .claude/review/logic-reviewer.md && fail "update-claude did not refresh the prompt" || pass "update-claude refreshes the reviewer prompt"
+
+# Preserves a customized verify.sh — never clobbers your project's commands.
+echo "MY-CUSTOM-VERIFY" > .claude/verify.sh
+"$SANDBOX/bin/update-claude" > /tmp/uc-run2.log 2>&1
+grep -q "MY-CUSTOM-VERIFY" .claude/verify.sh && pass "update-claude preserves a customized verify.sh" || fail "update-claude clobbered a customized verify.sh"
+
+# Restores verify.sh if it is missing.
+rm -f .claude/verify.sh
+"$SANDBOX/bin/update-claude" > /tmp/uc-run3.log 2>&1
+[ -f .claude/verify.sh ] && pass "update-claude restores a missing verify.sh" || fail "update-claude did not restore verify.sh"
+cd "$SANDBOX"
+
+# ============================================================
 # SECTION: Uninstall
 # ============================================================
 section "Uninstall"
@@ -551,6 +586,7 @@ echo "n" | "$SCRIPT_DIR/uninstall.sh" > /tmp/uninstall.log 2>&1 || fail "uninsta
 [ ! -f "$SANDBOX/.claude/rules/agent-design.md" ] && pass "uninstall removed agent-design.md" || fail "uninstall left agent-design.md"
 [ ! -f "$SANDBOX/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md" ] && pass "uninstall removed AGENT_PROJECT_PLAYBOOK.md" || fail "uninstall left AGENT_PROJECT_PLAYBOOK.md"
 [ ! -f "$SANDBOX/bin/init-claude" ] && pass "uninstall removed bin/init-claude" || fail "uninstall left bin/init-claude"
+[ ! -f "$SANDBOX/bin/update-claude" ] && pass "uninstall removed bin/update-claude" || fail "uninstall left bin/update-claude"
 
 # Verify custom settings preserved — tmp file to avoid subshell
 TMPRESULTS2=$(mktemp)

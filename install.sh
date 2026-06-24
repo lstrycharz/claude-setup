@@ -58,6 +58,8 @@ echo "→ Installing init-claude to ~/bin/"
 mkdir -p ~/bin
 cp "$SCRIPT_DIR/bin/init-claude" ~/bin/
 chmod +x ~/bin/init-claude
+cp "$SCRIPT_DIR/bin/update-claude" ~/bin/
+chmod +x ~/bin/update-claude
 
 # 4. Ensure ~/bin is in PATH
 if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
