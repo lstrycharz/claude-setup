@@ -301,6 +301,19 @@ mkdir -p "$R/.claude"; touch "$R/.claude/verify.allow-no-tests"   # deliberate, 
 run_verify "$R"; rc=$?
 [ "$rc" -eq 0 ] && pass "verify: .claude/verify.allow-no-tests opts out of the hard-fail" || fail "verify: opt-out marker did not pass"
 
+# --- actionlint: lint GitHub Actions workflows when present (catch bugs locally) ---
+reset_shims; mkshim actionlint
+R="$SANDBOX/v-wf"; mkdir -p "$R/.github/workflows"
+printf 'name: x\non: push\n' > "$R/.github/workflows/ci.yml"
+run_verify "$R"; rc=$?
+grep -q '^actionlint' "$SHIMLOG" && pass "verify: runs actionlint on workflows when present" || fail "verify: did not run actionlint on a repo with workflows"
+[ "$rc" -eq 0 ] && pass "verify: green when actionlint is happy" || fail "verify: failed despite actionlint passing"
+# actionlint reports a problem → verify fails
+rm -rf "$SHIMDIR"; mkdir -p "$SHIMDIR"; : > "$SHIMLOG"
+printf '#!/bin/bash\nexit 1\n' > "$SHIMDIR/actionlint"; chmod +x "$SHIMDIR/actionlint"
+run_verify "$R"; rc=$?
+[ "$rc" -ne 0 ] && pass "verify: fails when actionlint reports a workflow problem" || fail "verify: ignored an actionlint failure"
+
 # ============================================================
 # SECTION: cross-vendor logic reviewer (review-diff.mjs)
 # ============================================================
