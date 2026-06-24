@@ -24,7 +24,7 @@ done < <(git ls-files '*.mjs')
 step "bash -n (shipped shell scripts)"
 while IFS= read -r f; do
   bash -n "$f" && echo "  ok $f" || { echo "  FAIL $f"; fail=1; }
-done < <(git ls-files '*.sh' 'bin/init-claude' 'template/.pre-commit-hook')
+done < <(git ls-files '*.sh' 'bin/*' 'template/.pre-commit-hook')
 
 step "actionlint (workflow lint)"
 if command -v actionlint >/dev/null 2>&1; then

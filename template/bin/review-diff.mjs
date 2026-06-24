@@ -21,7 +21,7 @@
 //
 // Env:
 //   OPENROUTER_API_KEY     required (catastrophic if missing)
-//   LOGIC_REVIEWER_MODEL   default google/gemini-2.5-pro (cross-vendor vs Claude)
+//   LOGIC_REVIEWER_MODEL   default deepseek/deepseek-chat (cross-vendor vs Claude)
 //   OPENROUTER_BASE_URL    default https://openrouter.ai/api/v1  (swap for a
 //                          local Ollama/vLLM OpenAI-compatible endpoint)
 //   REVIEW_BASE_REF        default origin/main
@@ -273,7 +273,7 @@ async function main() {
     console.log(`ℹ️  diff exceeded ${MAX_DIFF_LINES} lines — reviewing the first ${MAX_DIFF_LINES}.`);
   }
 
-  const model = process.env.LOGIC_REVIEWER_MODEL || 'google/gemini-2.5-pro';
+  const model = process.env.LOGIC_REVIEWER_MODEL || 'deepseek/deepseek-chat';
   let base;
   try {
     base = validateBaseUrl(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1');

@@ -52,9 +52,10 @@ done
 # Remove playbooks/ dir only if empty (user may have custom playbooks)
 [ -d ~/.claude/playbooks ] && rmdir ~/.claude/playbooks 2>/dev/null && echo "  removed empty playbooks/ dir" || true
 
-# 5. Remove init-claude
-echo "→ Removing ~/bin/init-claude"
+# 5. Remove init-claude / update-claude
+echo "→ Removing ~/bin/init-claude and ~/bin/update-claude"
 [ -f ~/bin/init-claude ] && rm -f ~/bin/init-claude && echo "  removed init-claude"
+[ -f ~/bin/update-claude ] && rm -f ~/bin/update-claude && echo "  removed update-claude"
 
 # 6. Strip our hooks from ~/.claude/settings.json — preserve everything else
 if [ -f ~/.claude/settings.json ]; then
