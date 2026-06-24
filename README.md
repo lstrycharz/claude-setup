@@ -225,7 +225,7 @@ That's it. The install script copies everything to the right places.
 Before sharing this with teammates, verify it works cleanly:
 
 ```bash
-./test.sh          # 47 assertions in a sandboxed ~/ (30 sec)
+./test.sh          # 114 assertions in a sandboxed ~/ (30 sec)
 ./docker-test.sh   # full install on a clean Ubuntu container (2 min, requires Docker)
 ```
 
