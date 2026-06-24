@@ -130,6 +130,19 @@ for root in $roots; do
   ) || fail=1
 done
 
+# Lint GitHub Actions workflows if present — catch workflow bugs (bad context
+# scoping, typos) LOCALLY, before CI does. Optional, like ruff/mypy: run it if
+# installed, otherwise say so loudly rather than skip silently.
+if ls .github/workflows/*.y*ml >/dev/null 2>&1; then
+  if command -v actionlint >/dev/null 2>&1; then
+    step "actionlint"; actionlint || fail=1
+  else
+    echo ""
+    echo "ℹ️  .github/workflows present but actionlint not installed — workflows not linted."
+    echo "    Install it to catch workflow bugs locally: brew install actionlint"
+  fi
+fi
+
 echo ""
 if [ "$fail" -eq 0 ]; then echo "✅ verify: green"; else echo "❌ verify: failed — fix before committing"; fi
 exit "$fail"

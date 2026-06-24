@@ -26,6 +26,13 @@ while IFS= read -r f; do
   bash -n "$f" && echo "  ok $f" || { echo "  FAIL $f"; fail=1; }
 done < <(git ls-files '*.sh' 'bin/init-claude' 'template/.pre-commit-hook')
 
+step "actionlint (workflow lint)"
+if command -v actionlint >/dev/null 2>&1; then
+  actionlint || fail=1
+else
+  echo "  ℹ️  actionlint not installed — skipping (brew install actionlint to enable)"
+fi
+
 step "test suite (test.sh)"
 bash test.sh || fail=1
 
