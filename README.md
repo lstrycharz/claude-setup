@@ -204,12 +204,29 @@ There are 7 layers of protection, each catching what the others might miss:
 | Layer | What it does | When it runs |
 |---|---|---|
 | `.gitignore` | Blocks `.env`, `.pem`, `.key`, credentials from being committed | Every `git add` |
-| `settings.json` | Blocks Claude from even *reading* secret files | Every Claude session |
+| `settings.json` | Deny rules for reading secret files and dangerous commands (best-effort — see below) | Every Claude session |
 | `security.md` rule | Tells Claude: no hardcoded secrets, validate URLs, sanitize input | Every Claude session |
 | Config protection hook | Stops Claude from loosening your linter/formatter rules | Before every file edit |
 | No-verify blocker hook | Stops Claude from skipping pre-commit checks | Before every git command |
 | Gitleaks pre-commit | Scans the actual content of every commit for leaked tokens/keys | Every `git commit` |
 | `/security-scan` | Full OWASP Top 10 audit of your codebase | Whenever you run it |
+
+### What the deny lists are (and aren't)
+
+The `deny` patterns in `settings.json` / `settings.local.json` are **speed bumps,
+not a security boundary**. Pattern matching over a shell surface can always be
+sidestepped by an equivalent spelling (`cat .env` instead of a `Read`, a
+variant flag, a no-space pipe) — so treat them as friction against the lazy
+path, and rely on the layers that actually enforce:
+
+- **Secrets never land in git**: `.gitignore` + gitleaks in the pre-commit hook.
+- **Force-push protection**: enable **branch protection** on your host
+  (see `.claude/ci/BRANCH_PROTECTION.md`) — server-side, spelling-proof.
+- **Unverified code never merges**: the verify.sh floor in the pre-commit /
+  pre-push hooks and CI.
+
+If you add deny rules, add them for the friction value — don't build a threat
+model on them.
 
 ## Updating
 

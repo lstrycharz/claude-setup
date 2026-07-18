@@ -5,7 +5,11 @@
     "deny": [
       "Bash(sudo *)",
       "Bash(curl * | bash)",
-      "Bash(wget * | bash)"
+      "Bash(curl * | sh)",
+      "Bash(curl * | zsh)",
+      "Bash(wget * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | zsh)"
     ]
   }
 }

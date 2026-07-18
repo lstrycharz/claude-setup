@@ -137,7 +137,8 @@ catch (e) {
 }
 
 if (!settings.env) settings.env = {};
-settings.env.ENABLE_TOOL_SEARCH = 'true';
+// A default, not a mandate: never overwrite the user's explicit choice (#21).
+if (!('ENABLE_TOOL_SEARCH' in settings.env)) settings.env.ENABLE_TOOL_SEARCH = 'true';
 
 // Hook files this script manages — used to identify our entries during merge.
 // Matching by filename (not full path) so detection survives path changes.
