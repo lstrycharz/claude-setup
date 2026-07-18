@@ -1,11 +1,13 @@
-FROM ubuntu:22.04
+# node:22 base, NOT ubuntu+apt-nodejs: Ubuntu 22.04's archive nodejs is v12,
+# which can't parse the hooks (optional chaining) — every hook would exit 1 with
+# a SyntaxError, which Claude Code treats as non-blocking, silently disabling
+# the whole protection layer (#8). The image must match a supported runtime.
+FROM node:22-bookworm-slim
 
-# Minimum runtime deps for claude-setup: bash, node, git, curl
+# Remaining runtime deps for claude-setup: git, curl
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      bash \
       git \
-      nodejs \
       curl \
       ca-certificates && \
     rm -rf /var/lib/apt/lists/*

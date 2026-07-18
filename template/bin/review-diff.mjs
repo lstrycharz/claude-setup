@@ -12,7 +12,8 @@
 //     We gather false-positive + prompt-injection data first; only then do we
 //     consider promoting specific categories to blocking. (see agent-design.md:
 //     "blocking vs advisory is a real, useful distinction".)
-//   - Only a CATASTROPHIC config error exits non-zero: a missing API key, so a
+//   - Only a CATASTROPHIC config error exits non-zero: a missing API key, a bad
+//     base URL, or an un-computable diff (missing/unfetched base ref) — so a
 //     misconfigured gate is visible instead of silently no-op-ing forever.
 //   - A network/timeout error or an unparseable verdict is logged and skipped
 //     (exit 0) — the reviewer being down must not wedge the pipeline.
@@ -224,8 +225,15 @@ function getDiff() {
         ':(exclude)dist/*', ':(exclude)build/*'],
       { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
     );
-  } catch {
-    return '';
+  } catch (err) {
+    // A git failure is NOT an empty diff. Swallowing it here used to print
+    // "✅ No code changes to review" on a missing base ref / bad
+    // REVIEW_BASE_REF / shallow clone without a merge base — a silent false
+    // PASS, the same class as W2. Catastrophic config error: fail loud (#9).
+    const detail = (err && err.stderr && String(err.stderr).trim()) || err.message;
+    console.error(`❌ could not compute diff against ${base}: ${detail}`);
+    console.error('   Check REVIEW_BASE_REF and that the base ref is fetched (a merge base must exist).');
+    process.exit(1);
   }
 }
 

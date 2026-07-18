@@ -97,6 +97,14 @@ for (const e of pre) if (Array.isArray(e.hooks)) count += e.hooks.length;
 console.log(count);
 ")
   [ "$HOOK_COUNT" = "4" ] && pass "settings.json has exactly 4 PreToolUse hooks" || fail "settings.json has $HOOK_COUNT hooks (expected 4)"
+
+  # #10: the edit matcher must cover MultiEdit/NotebookEdit too, or config
+  # protection is bypassable by tool choice.
+  node -e "
+const s = require('$SETTINGS');
+const m = (s.hooks.PreToolUse || []).map(e => e.matcher);
+process.exit(m.includes('Write|Edit|MultiEdit|NotebookEdit') ? 0 : 1);
+" && pass "settings.json edit matcher covers MultiEdit/NotebookEdit" || fail "edit matcher does not cover MultiEdit/NotebookEdit"
 else
   fail "settings.json not created"
 fi
@@ -172,6 +180,23 @@ echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks .eslintrc.json"
 OUT=$(echo '{"tool_input":{"file_path":"src/app.ts"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "config-protection allows src/app.ts" || fail "config-protection wrongly blocked src/app.ts"
 
+# #10: typecheck/test-runner configs are the same gaming vector as lint configs
+OUT=$(echo '{"tool_input":{"file_path":"tsconfig.json"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks tsconfig.json" || fail "config-protection did NOT block tsconfig.json"
+OUT=$(echo '{"tool_input":{"file_path":"vitest.config.ts"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks vitest.config.ts" || fail "config-protection did NOT block vitest.config.ts"
+
+# #10: the floor itself is not agent-editable (path-based, not basename-based)
+OUT=$(echo '{"tool_input":{"file_path":"myproj/.claude/verify.sh"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks .claude/verify.sh" || fail "config-protection did NOT block .claude/verify.sh"
+OUT=$(echo '{"tool_input":{"file_path":"myproj/.claude/verify.allow-no-tests"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks the allow-no-tests marker" || fail "config-protection did NOT block the allow-no-tests marker"
+OUT=$(echo '{"tool_input":{"file_path":"myproj/.git/hooks/pre-commit"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks .git/hooks/ files" || fail "config-protection did NOT block .git/hooks/ files"
+# …but a verify.sh OUTSIDE .claude/ is an ordinary file
+OUT=$(echo '{"tool_input":{"file_path":"scripts/verify.sh"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "config-protection allows a verify.sh outside .claude/" || fail "config-protection wrongly blocked scripts/verify.sh"
+
 # block-no-verify blocks
 OUT=$(echo '{"tool_input":{"command":"git commit --no-verify"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks --no-verify" || fail "block-no-verify did NOT block --no-verify"
@@ -179,6 +204,26 @@ echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks --no-verify" || f
 # block-no-verify allows
 OUT=$(echo '{"tool_input":{"command":"git commit -m test"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify allows normal commit" || fail "block-no-verify wrongly blocked normal commit"
+
+# #6: commit's short form -n is the same flag — must be blocked
+OUT=$(echo '{"tool_input":{"command":"git commit -n -m test"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks commit -n (short form)" || fail "block-no-verify did NOT block commit -n"
+OUT=$(echo '{"tool_input":{"command":"git commit -an -m test"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks bundled -an" || fail "block-no-verify did NOT block bundled -an"
+# #6: core.hooksPath overrides disable hooks wholesale — must be blocked
+OUT=$(echo '{"tool_input":{"command":"git -c core.hooksPath=/dev/null commit -m x"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks core.hooksPath -c override" || fail "block-no-verify did NOT block core.hooksPath override"
+OUT=$(echo '{"tool_input":{"command":"git config core.hooksPath /tmp/nohooks"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks git config core.hooksPath" || fail "block-no-verify did NOT block git config core.hooksPath"
+# regression guards: legitimate flags that merely resemble -n stay allowed
+OUT=$(echo '{"tool_input":{"command":"git commit --amend -m fix"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify allows commit --amend" || fail "block-no-verify wrongly blocked --amend"
+OUT=$(echo '{"tool_input":{"command":"git log -n 5"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify allows git log -n 5" || fail "block-no-verify wrongly blocked git log -n"
+# quoted mentions of a flag are data, not a bypass — must NOT block (false
+# positives teach the agent to obfuscate commands)
+OUT=$(echo '{"tool_input":{"command":"echo \"git commit -n is the short form\""}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify ignores flags inside quoted strings" || fail "block-no-verify false-blocked a quoted mention"
 
 # suggest-compact never blocks
 OUT=$(echo '{"tool_input":{"file_path":"src/app.ts"}}' | node "$SANDBOX/.claude/hooks/suggest-compact.mjs" 2>/dev/null; echo "EXIT:$?")
@@ -199,6 +244,20 @@ echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor ignores 'git commit' insid
 # enforce-floor: still blocks a real chained commit (regression guard for the anchor)
 OUT=$(echo "{\"tool_input\":{\"command\":\"true && git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor still blocks a chained 'git commit'" || fail "enforce-floor missed a chained git commit"
+
+# #6: bypass shapes that dodged the old regex must still be gated
+OUT=$(echo "{\"tool_input\":{\"command\":\"(git commit -m x)\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor gates a subshell commit" || fail "enforce-floor missed a subshell commit"
+OUT=$(printf '{"tool_input":{"command":"echo hi\\ngit commit -m x"},"cwd":"%s"}' "$EF_REPO" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor gates a newline-separated commit" || fail "enforce-floor missed a newline-separated commit"
+OUT=$(echo "{\"tool_input\":{\"command\":\"GIT_AUTHOR_NAME=x git commit -m y\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor gates an env-var-prefixed commit" || fail "enforce-floor missed an env-var-prefixed commit"
+
+# #6: a NON-executable pre-commit is silently skipped by git — not a wired floor
+EF_NOEXEC="$SANDBOX/ef-noexec"; mkdir -p "$EF_NOEXEC"; ( cd "$EF_NOEXEC" && git init -q && echo '{}' > package.json )
+touch "$EF_NOEXEC/.git/hooks/pre-commit"   # exists, but no exec bit
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_NOEXEC\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor blocks when pre-commit exists but is not executable" || fail "enforce-floor accepted a non-executable pre-commit"
 
 # enforce-floor: allows commit once the pre-commit hook exists
 touch "$EF_REPO/.git/hooks/pre-commit"; chmod +x "$EF_REPO/.git/hooks/pre-commit"
@@ -302,6 +361,16 @@ mkdir -p "$R/.claude"; touch "$R/.claude/verify.allow-no-tests"   # deliberate, 
 run_verify "$R"; rc=$?
 [ "$rc" -eq 0 ] && pass "verify: .claude/verify.allow-no-tests opts out of the hard-fail" || fail "verify: opt-out marker did not pass"
 
+# --- #7: a manifest verify.sh can't verify must NOT false-green the floor ---
+reset_shims
+R="$SANDBOX/v-go"; mkdir -p "$R"
+printf 'module example.com/x\n' > "$R/go.mod"
+run_verify "$R"; rc=$?
+[ "$rc" -ne 0 ] && pass "verify: unsupported stack (go.mod) blocks instead of false-greening" || fail "verify: go.mod repo passed with zero checks (false green)"
+mkdir -p "$R/.claude"; touch "$R/.claude/verify.allow-no-tests"
+run_verify "$R"; rc=$?
+[ "$rc" -eq 0 ] && pass "verify: unsupported stack can be accepted via allow-no-tests marker" || fail "verify: opt-out marker did not pass an unsupported stack"
+
 # --- actionlint: lint GitHub Actions workflows when present (catch bugs locally) ---
 reset_shims; mkshim actionlint
 R="$SANDBOX/v-wf"; mkdir -p "$R/.github/workflows"
@@ -367,6 +436,15 @@ else
   fail "reviewer: did not fail loud on missing API key"
 fi
 
+# --- #9: an un-computable diff is a loud config error, NOT "no changes" ---
+NOGIT="$SANDBOX/rev-nogit"; mkdir -p "$NOGIT"
+OUT=$( cd "$NOGIT" && OPENROUTER_API_KEY=dummy REVIEW_BASE_REF=origin/nonexistent node "$REV" </dev/null 2>&1; echo "EXIT:$?" )
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -qi "could not compute diff"; then
+  pass "reviewer: git failure exits 1 loudly (no silent false PASS)"
+else
+  fail "reviewer: git failure did not fail loud (silent false PASS risk)"
+fi
+
 # --- W2: numeric env vars validated (NaN/0 must not silently empty the diff) ---
 rev "process.exit(m.numEnv('abc',1000)===1000?0:1)" \
   && pass "reviewer: numEnv falls back on non-numeric (NaN guard)" || fail "reviewer: numEnv accepted NaN"
@@ -423,11 +501,17 @@ mkdir -p "$SANDBOX/.claude"
 echo "NOT VALID JSON {{{" > "$SETTINGS"
 
 if "$SCRIPT_DIR/install.sh" > /tmp/install-malformed.log 2>&1; then
-  # Silent recovery - settings.json should now be valid
+  # Recovery must be LOUD, not silent: valid settings.json + a backup of the
+  # unparseable original (#15 — a typo must not cost the user their config).
   if node -e "require('$SETTINGS')" 2>/dev/null; then
-    pass "install.sh recovers from malformed settings.json (silently replaces with valid)"
+    pass "install.sh recovers from malformed settings.json (replaces with valid)"
   else
     fail "install.sh did not produce valid settings.json after malformed input"
+  fi
+  if ls "$SETTINGS".bak-* >/dev/null 2>&1; then
+    pass "install.sh backs up the malformed settings.json before replacing it"
+  else
+    fail "install.sh replaced malformed settings.json WITHOUT a backup (data loss)"
   fi
 else
   # Loud failure would also be acceptable - mark as pass

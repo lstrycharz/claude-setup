@@ -122,9 +122,25 @@ for root in $roots; do
   (
     cd "$root" || exit 0
     fail=0
-    [ -f package.json ] && verify_node
+    ran_stack=0
+    [ -f package.json ] && { verify_node; ran_stack=1; }
     if [ -f pyproject.toml ] || [ -f setup.py ] || ls ./*.py >/dev/null 2>&1; then
       verify_python
+      ran_stack=1
+    fi
+    # A manifest we can't verify must NOT pass silently: enforce-floor gates
+    # go/rust/java repos on this script, and running zero checks then exiting 0
+    # is a false-green floor — the exact gap this file exists to close (#7).
+    if [ "$ran_stack" -eq 0 ]; then
+      for m in go.mod Cargo.toml pom.xml build.gradle build.gradle.kts; do
+        if [ -f "$m" ]; then
+          echo ""
+          echo "⚠️  $m detected but verify.sh has no runner for this stack — the floor would run NOTHING."
+          echo "    Add your stack's lint/test commands here (mirror verify_node/verify_python)."
+          no_test_floor
+          break
+        fi
+      done
     fi
     exit "$fail"
   ) || fail=1

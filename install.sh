@@ -9,14 +9,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Installing Claude Code setup..."
 echo ""
 
-# Hard dependency check — Node is required for settings merging
+# Hard dependency check — Node is required for settings merging AND the hooks.
+# A too-old Node is worse than none: the hooks fail to parse (optional chaining),
+# exit 1, and Claude Code treats non-2 exits as non-blocking — so every
+# protection hook silently no-ops (#8). Ubuntu's default apt nodejs is v12.
 if ! command -v node &> /dev/null; then
   echo "❌ Node.js is required but not installed."
   echo ""
   echo "   Install Node first, then re-run ./install.sh:"
   echo "     macOS:   brew install node"
-  echo "     Ubuntu:  sudo apt-get install -y nodejs"
+  echo "     Ubuntu:  use NodeSource or nvm (apt's default nodejs is too old):"
+  echo "              https://github.com/nodesource/distributions"
   echo "     Other:   https://nodejs.org/"
+  exit 1
+fi
+NODE_MAJOR=$(node -p 'parseInt(process.versions.node, 10)' 2>/dev/null || echo 0)
+if [ "${NODE_MAJOR:-0}" -lt 18 ]; then
+  echo "❌ Node.js >= 18 is required (found $(node --version 2>/dev/null || echo unknown))."
+  echo "   The hooks use modern syntax an old Node can't parse — they would"
+  echo "   silently no-op on every tool call instead of protecting anything."
+  echo "   Upgrade via https://github.com/nodesource/distributions or nvm, then re-run."
   exit 1
 fi
 
@@ -109,7 +121,19 @@ const settingsPath = path.join(process.env.HOME, '.claude', 'settings.json');
 const hooksDir = path.join(process.env.HOME, '.claude', 'hooks');
 
 let settings = {};
-try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); }
+catch (e) {
+  // A malformed settings.json still holds the user's permissions/model/hooks —
+  // never silently discard it. Back it up and shout (#15).
+  if (fs.existsSync(settingsPath)) {
+    const bak = settingsPath + '.bak-' + Date.now();
+    try {
+      fs.copyFileSync(settingsPath, bak);
+      console.error('⚠️  settings.json was unparseable (' + e.message + ').');
+      console.error('    Backed up to ' + bak + ' — recover your customizations from there.');
+    } catch { /* nothing to back up */ }
+  }
+}
 
 if (!settings.env) settings.env = {};
 settings.env.ENABLE_TOOL_SEARCH = 'true';
@@ -122,8 +146,10 @@ const isOurHook = (h) =>
   OUR_HOOK_FILES.some(name => h.command.includes(name));
 
 // Our desired PreToolUse configuration, keyed by matcher pattern.
+// MultiEdit/NotebookEdit included — they edit files just like Write/Edit, and
+// leaving them out let any protected config be edited through them (#10).
 const OUR_MATCHERS = {
-  'Write|Edit': [
+  'Write|Edit|MultiEdit|NotebookEdit': [
     { type: 'command', command: 'node ' + hooksDir + '/config-protection.mjs' },
     { type: 'command', command: 'node ' + hooksDir + '/suggest-compact.mjs' }
   ],
@@ -139,11 +165,17 @@ const OUR_MATCHERS = {
 if (!settings.hooks) settings.hooks = {};
 if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
 
+// First strip our hooks from EVERY matcher entry — this migrates installs from
+// older matcher keys (e.g. plain 'Write|Edit') instead of duplicating hooks
+// under both the old and new matcher.
+for (const entry of settings.hooks.PreToolUse) {
+  if (Array.isArray(entry.hooks)) entry.hooks = entry.hooks.filter(h => !isOurHook(h));
+}
+
 for (const [matcher, ourHooks] of Object.entries(OUR_MATCHERS)) {
   const entry = settings.hooks.PreToolUse.find(e => e.matcher === matcher);
   if (entry) {
-    // Strip our previously-installed hooks, keep any user-added hooks on this matcher.
-    entry.hooks = (entry.hooks || []).filter(h => !isOurHook(h)).concat(ourHooks);
+    entry.hooks = (entry.hooks || []).concat(ourHooks);
   } else {
     settings.hooks.PreToolUse.push({ matcher, hooks: [...ourHooks] });
   }
@@ -161,7 +193,9 @@ fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 if ! command -v gitleaks &> /dev/null; then
   echo ""
   echo "⚠️  gitleaks not installed. Secret scanning won't work without it."
-  if command -v brew &> /dev/null; then
+  # Only prompt when stdin is a terminal — otherwise (CI, piped installs,
+  # test.sh) `read` hangs forever waiting for a keypress (#17).
+  if [ -t 0 ] && command -v brew &> /dev/null; then
     read -p "   Install via Homebrew? [y/N] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then

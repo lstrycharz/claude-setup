@@ -119,7 +119,7 @@ Walk through the checklist below if you're about to share this with others. Each
 - Script fails at the settings-merging step with a clear error
 - Rules, hooks, commands, agents, `init-claude` still get copied (they're file copies, no Node needed)
 
-**Current behavior:** install.sh will fail with `node: command not found` partway through. Coworkers should install Node first: `brew install node` (macOS) or `apt-get install nodejs` (Ubuntu).
+**Current behavior:** install.sh fails up front if Node is missing **or older than 18** (Ubuntu's apt default is v12, which can't parse the hooks — they would silently no-op). Coworkers should install Node first: `brew install node` (macOS) or NodeSource/nvm (Ubuntu — https://github.com/nodesource/distributions).
 
 ---
 
