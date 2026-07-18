@@ -148,45 +148,57 @@ const isOurHook = (h) =>
   h && h.type === 'command' && typeof h.command === 'string' &&
   OUR_HOOK_FILES.some(name => h.command.includes(name));
 
-// Our desired PreToolUse configuration, keyed by matcher pattern.
+// Our desired hook configuration, keyed by event then matcher pattern.
 // MultiEdit/NotebookEdit included — they edit files just like Write/Edit, and
 // leaving them out let any protected config be edited through them (#10).
 // One dispatcher process per event instead of one per hook (#19).
-const OUR_MATCHERS = {
-  'Write|Edit|MultiEdit|NotebookEdit': [
-    { type: 'command', command: 'node ' + hooksDir + '/dispatch.mjs edit' }
-  ],
-  'Bash': [
-    { type: 'command', command: 'node ' + hooksDir + '/dispatch.mjs bash' }
-  ]
+// PostToolUse Bash = the state-based commit-watchdog: spelling-proof floor
+// detection after the fact (#12).
+const OUR_EVENTS = {
+  PreToolUse: {
+    'Write|Edit|MultiEdit|NotebookEdit': [
+      { type: 'command', command: 'node ' + hooksDir + '/dispatch.mjs edit' }
+    ],
+    'Bash': [
+      { type: 'command', command: 'node ' + hooksDir + '/dispatch.mjs bash' }
+    ]
+  },
+  PostToolUse: {
+    'Bash': [
+      { type: 'command', command: 'node ' + hooksDir + '/dispatch.mjs post-bash' }
+    ]
+  }
 };
 
-// Merge instead of replace: preserve other hook events (PostToolUse, Stop, etc.),
-// other PreToolUse matchers, and any user-added hooks on our matchers.
+// Merge instead of replace: preserve other hook events (Stop, etc.), other
+// matchers, and any user-added hooks on our matchers.
 // Idempotent: re-running the installer does not duplicate our hooks.
 if (!settings.hooks) settings.hooks = {};
-if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
 
-// First strip our hooks from EVERY matcher entry — this migrates installs from
-// older matcher keys (e.g. plain 'Write|Edit') instead of duplicating hooks
-// under both the old and new matcher.
-for (const entry of settings.hooks.PreToolUse) {
-  if (Array.isArray(entry.hooks)) entry.hooks = entry.hooks.filter(h => !isOurHook(h));
-}
+for (const [event, matchers] of Object.entries(OUR_EVENTS)) {
+  if (!Array.isArray(settings.hooks[event])) settings.hooks[event] = [];
 
-for (const [matcher, ourHooks] of Object.entries(OUR_MATCHERS)) {
-  const entry = settings.hooks.PreToolUse.find(e => e.matcher === matcher);
-  if (entry) {
-    entry.hooks = (entry.hooks || []).concat(ourHooks);
-  } else {
-    settings.hooks.PreToolUse.push({ matcher, hooks: [...ourHooks] });
+  // First strip our hooks from EVERY matcher entry — this migrates installs
+  // from older matcher keys (e.g. plain 'Write|Edit') instead of duplicating
+  // hooks under both the old and new matcher.
+  for (const entry of settings.hooks[event]) {
+    if (Array.isArray(entry.hooks)) entry.hooks = entry.hooks.filter(h => !isOurHook(h));
   }
-}
 
-// Drop any matcher entries left with empty hook arrays (cleanup from prior versions).
-settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(
-  e => Array.isArray(e.hooks) && e.hooks.length > 0
-);
+  for (const [matcher, ourHooks] of Object.entries(matchers)) {
+    const entry = settings.hooks[event].find(e => e.matcher === matcher);
+    if (entry) {
+      entry.hooks = (entry.hooks || []).concat(ourHooks);
+    } else {
+      settings.hooks[event].push({ matcher, hooks: [...ourHooks] });
+    }
+  }
+
+  // Drop any matcher entries left with empty hook arrays (cleanup from prior versions).
+  settings.hooks[event] = settings.hooks[event].filter(
+    e => Array.isArray(e.hooks) && e.hooks.length > 0
+  );
+}
 
 fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 "
