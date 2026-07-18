@@ -58,6 +58,7 @@ cp "$SCRIPT_DIR/template/settings.local.json" ~/.claude-template/
 cp "$SCRIPT_DIR/template/dot-gitignore" ~/.claude-template/.gitignore
 cp "$SCRIPT_DIR/template/.project-gitignore" ~/.claude-template/
 cp "$SCRIPT_DIR/template/.pre-commit-hook" ~/.claude-template/
+cp "$SCRIPT_DIR/template/.pre-push-hook" ~/.claude-template/
 cp "$SCRIPT_DIR/template/verify.sh" ~/.claude-template/
 mkdir -p ~/.claude-template/ci ~/.claude-template/configs ~/.claude-template/bin ~/.claude-template/review
 cp "$SCRIPT_DIR/template/ci/"* ~/.claude-template/ci/
@@ -136,11 +137,13 @@ catch (e) {
 }
 
 if (!settings.env) settings.env = {};
-settings.env.ENABLE_TOOL_SEARCH = 'true';
+// A default, not a mandate: never overwrite the user's explicit choice (#21).
+if (!('ENABLE_TOOL_SEARCH' in settings.env)) settings.env.ENABLE_TOOL_SEARCH = 'true';
 
 // Hook files this script manages — used to identify our entries during merge.
 // Matching by filename (not full path) so detection survives path changes.
-const OUR_HOOK_FILES = ['config-protection.mjs', 'suggest-compact.mjs', 'block-no-verify.mjs', 'enforce-floor.mjs'];
+// The four legacy names stay listed so upgrading strips old-style entries (#19).
+const OUR_HOOK_FILES = ['dispatch.mjs', 'config-protection.mjs', 'suggest-compact.mjs', 'block-no-verify.mjs', 'enforce-floor.mjs'];
 const isOurHook = (h) =>
   h && h.type === 'command' && typeof h.command === 'string' &&
   OUR_HOOK_FILES.some(name => h.command.includes(name));
@@ -148,14 +151,13 @@ const isOurHook = (h) =>
 // Our desired PreToolUse configuration, keyed by matcher pattern.
 // MultiEdit/NotebookEdit included — they edit files just like Write/Edit, and
 // leaving them out let any protected config be edited through them (#10).
+// One dispatcher process per event instead of one per hook (#19).
 const OUR_MATCHERS = {
   'Write|Edit|MultiEdit|NotebookEdit': [
-    { type: 'command', command: 'node ' + hooksDir + '/config-protection.mjs' },
-    { type: 'command', command: 'node ' + hooksDir + '/suggest-compact.mjs' }
+    { type: 'command', command: 'node ' + hooksDir + '/dispatch.mjs edit' }
   ],
   'Bash': [
-    { type: 'command', command: 'node ' + hooksDir + '/block-no-verify.mjs' },
-    { type: 'command', command: 'node ' + hooksDir + '/enforce-floor.mjs' }
+    { type: 'command', command: 'node ' + hooksDir + '/dispatch.mjs bash' }
   ]
 };
 
@@ -211,7 +213,7 @@ echo "✅ Done! Your setup:"
 echo ""
 echo "   ~/.claude/rules/        → Global rules (auto-loaded in every project)"
 echo "   ~/.claude/playbooks/    → Long-form references (pulled when needed, not auto-loaded)"
-echo "   ~/.claude/hooks/        → Hooks (config-protection, block-no-verify, enforce-floor, suggest-compact)"
+echo "   ~/.claude/hooks/        → Hooks (dispatch.mjs: config-protection, no-verify guard, enforce-floor, suggest-compact)"
 echo "   ~/.claude/commands/     → Slash commands (/code-review, /security-scan, /logic-review)"
 echo "   ~/.claude/agents/       → Subagents (code-reviewer, security-reviewer)"
 echo "   ~/.claude-template/     → Project template (used by init-claude)"

@@ -27,13 +27,17 @@ else
   echo "ℹ️  .gitignore already exists — skipped. Review it to ensure .env* is ignored."
 fi
 
-# Install gitleaks + verify.sh pre-commit hook if this is a git repo
+# Install the two-tier floor hooks if this is a git repo (#14):
+#   pre-commit → secret scan + quick floor (lint+typecheck) on the staged snapshot
+#   pre-push   → the FULL floor (adds tests)
 if [ -d ".git" ]; then
   cp "$TEMPLATE/.pre-commit-hook" .git/hooks/pre-commit
   chmod +x .git/hooks/pre-commit
-  echo "✅ Pre-commit hook installed (secret scan + verify.sh floor)"
+  cp "$TEMPLATE/.pre-push-hook" .git/hooks/pre-push
+  chmod +x .git/hooks/pre-push
+  echo "✅ Git hooks installed (pre-commit: secrets + quick floor; pre-push: full floor)"
 else
-  echo "ℹ️  Not a git repo — skipping pre-commit hook. Run 'git init' first, then re-run init-claude."
+  echo "ℹ️  Not a git repo — skipping git hooks. Run 'git init' first, then re-run init-claude."
 fi
 
 # The deterministic floor: one verify.sh that every gate runs.
@@ -87,6 +91,7 @@ fi
 # Clean up template-only files that shouldn't live inside .claude/
 rm -f .claude/.project-gitignore
 rm -f .claude/.pre-commit-hook
+rm -f .claude/.pre-push-hook
 
 echo "✅ .claude/ scaffolded"
 echo ""

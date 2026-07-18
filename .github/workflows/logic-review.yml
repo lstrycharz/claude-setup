@@ -43,5 +43,14 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           [ -f "$COMMENT_FILE" ] || { echo "no findings to post"; exit 0; }
-          gh pr comment "$PR" --body-file "$COMMENT_FILE" --edit-last \
-            || gh pr comment "$PR" --body-file "$COMMENT_FILE"
+          # Find OUR comment by its stable marker and edit that one. --edit-last
+          # edits the last comment by the token's author (the github-actions
+          # bot), which clobbers other bot workflows' comments (#16).
+          CID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
+            --jq '[.[] | select(.body | startswith("<!-- logic-reviewer -->"))][0].id')
+          if [ -n "$CID" ] && [ "$CID" != "null" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${CID}" \
+              -F body=@"$COMMENT_FILE" > /dev/null
+          else
+            gh pr comment "$PR" --body-file "$COMMENT_FILE"
+          fi

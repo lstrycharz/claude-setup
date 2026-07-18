@@ -7,7 +7,8 @@ set -e
 echo "Uninstalling Claude Code setup..."
 echo ""
 
-OUR_HOOKS=(config-protection.mjs block-no-verify.mjs suggest-compact.mjs enforce-floor.mjs)
+# dispatch.mjs is current; the four legacy names cover pre-#19 installs.
+OUR_HOOKS=(dispatch.mjs config-protection.mjs block-no-verify.mjs suggest-compact.mjs enforce-floor.mjs)
 OUR_COMMANDS=(code-review.md security-scan.md logic-review.md)
 OUR_AGENTS=(code-reviewer.md security-reviewer.md)
 OUR_RULES=(workflow.md qa.md testing.md code-style.md security.md agent-design.md)
@@ -73,7 +74,7 @@ try {
   process.exit(0);
 }
 
-const OUR_HOOK_FILES = ['config-protection.mjs', 'suggest-compact.mjs', 'block-no-verify.mjs', 'enforce-floor.mjs'];
+const OUR_HOOK_FILES = ['dispatch.mjs', 'config-protection.mjs', 'suggest-compact.mjs', 'block-no-verify.mjs', 'enforce-floor.mjs'];
 const isOurHook = (h) =>
   h && h.type === 'command' && typeof h.command === 'string' &&
   OUR_HOOK_FILES.some(name => h.command.includes(name));

@@ -54,11 +54,16 @@ else
   echo "  • .claude/verify.sh kept (yours) — diff against $TEMPLATE/verify.sh for new options"
 fi
 
-# 3. pre-commit hook — add only if missing (don't clobber a customized one).
+# 3. git hooks — add only if missing (don't clobber customized ones).
 if [ -d ".git" ] && [ ! -f ".git/hooks/pre-commit" ]; then
   cp "$TEMPLATE/.pre-commit-hook" .git/hooks/pre-commit
   chmod +x .git/hooks/pre-commit
   echo "  ✓ .git/hooks/pre-commit installed (was missing)"
+fi
+if [ -d ".git" ] && [ ! -f ".git/hooks/pre-push" ] && [ -f "$TEMPLATE/.pre-push-hook" ]; then
+  cp "$TEMPLATE/.pre-push-hook" .git/hooks/pre-push
+  chmod +x .git/hooks/pre-push
+  echo "  ✓ .git/hooks/pre-push installed (was missing — full floor now gates pushes)"
 fi
 
 echo ""
