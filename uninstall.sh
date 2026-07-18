@@ -1,6 +1,11 @@
 #!/bin/bash
-# uninstall.sh — Safely remove what install.sh installed
-# Preserves user customizations (permissions, env, other hooks, custom rules)
+# uninstall.sh — remove the global rules AND clean up a legacy PRE-PLUGIN
+# install (copied hooks/commands/agents + their settings.json wiring).
+#
+# Since #13 the hooks/commands/agents ship as a plugin (remove with
+# /plugin uninstall). This script stays for (a) the global rules, which the
+# plugin doesn't manage, and (b) migrating machines off the old copied install.
+# Preserves user customizations (permissions, env, other hooks, custom rules).
 
 set -e
 

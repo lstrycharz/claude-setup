@@ -1,12 +1,22 @@
 #!/bin/bash
 # init-claude — scaffold .claude/ in the current project
-# Usage: cd your-project && init-claude
+# Usage (plugin):   /init-floor   (runs: bash ${CLAUDE_PLUGIN_ROOT}/bin/init-claude)
+# Usage (checkout): cd your-project && /path/to/claude-setup/bin/init-claude
+#
+# The template ships INSIDE the plugin/repo (script-relative), so there is no
+# separate installed copy to drift out of date (#13). ~/.claude-template is a
+# legacy fallback for pre-plugin installs.
 
-TEMPLATE="$HOME/.claude-template"
-
-if [ ! -d "$TEMPLATE" ]; then
-  echo "❌ Template not found at $TEMPLATE"
-  echo "   Run the setup first: cd claude-setup && ./install.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "$CLAUDE_PLUGIN_ROOT/template" ]; then
+  TEMPLATE="$CLAUDE_PLUGIN_ROOT/template"
+elif [ -d "$SCRIPT_DIR/../template" ]; then
+  TEMPLATE="$(cd "$SCRIPT_DIR/../template" && pwd)"
+elif [ -d "$HOME/.claude-template" ]; then
+  TEMPLATE="$HOME/.claude-template"   # legacy pre-plugin install
+else
+  echo "❌ Template not found (looked in the plugin root, next to this script, and ~/.claude-template)."
+  echo "   Install the claude-setup plugin, or run this script from a repo checkout."
   exit 1
 fi
 
@@ -18,6 +28,9 @@ if [ -d ".claude" ]; then
 fi
 
 cp -r "$TEMPLATE" .claude
+# In the repo/plugin the .claude-internal gitignore is stored as dot-gitignore
+# (a literal .gitignore would make git ignore template files). Restore its name.
+[ -f .claude/dot-gitignore ] && mv .claude/dot-gitignore .claude/.gitignore
 
 # Add project-root .gitignore if none exists
 if [ ! -f ".gitignore" ]; then

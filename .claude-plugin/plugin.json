@@ -1,0 +1,11 @@
+{
+  "name": "claude-setup",
+  "version": "1.0.0",
+  "description": "Claude Code harness: guardrail hooks (config protection, floor enforcement, commit watchdog), review commands and agents, and the deterministic verify.sh floor scaffolder.",
+  "author": {
+    "name": "Lukasz Strycharz"
+  },
+  "repository": "https://github.com/lstrycharz/claude-setup",
+  "license": "MIT",
+  "keywords": ["hooks", "code-review", "tdd", "verification", "guardrails"]
+}
