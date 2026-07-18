@@ -45,6 +45,7 @@ export function numEnv(raw, fallback) {
 }
 
 const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 1000);
+const MAX_FILE_LINES = numEnv(process.env.REVIEW_MAX_FILE_LINES, 400);
 const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 120000);
 
 export class ReviewError extends Error {}
@@ -72,15 +73,71 @@ export function validateBaseUrl(raw) {
 // ── Pure, unit-tested core ──────────────────────────────────────────────────
 
 // Cap the diff so one giant PR can't blow the token budget or the context
-// window. Truncates by line count and flags it (never silently drops).
-export function capDiff(diff, maxLines = MAX_DIFF_LINES) {
-  const lines = diff.split('\n');
-  if (lines.length <= maxLines) return { text: diff, truncated: false };
-  const kept = lines.slice(0, maxLines).join('\n');
-  return {
-    text: `${kept}\n\n[...diff truncated at ${maxLines} lines for review...]`,
-    truncated: true,
-  };
+// window — PER FILE, with every omission NAMED (#20). Head-only truncation was
+// a review-evasion vector: anything past the global line cap (a padded PR, a
+// file late in git's path ordering) was silently never reviewed while the
+// comment showed a reassuring PASS. Now each file gets up to maxLinesPerFile,
+// the total is bounded by maxTotalLines, and skipped/truncated files are
+// listed in the text (so the model knows), returned to the caller (so the PR
+// comment names them). Scans by newline index — never materializes a
+// whole-diff line array (the diff can be tens of MB).
+export function capDiff(diff, opts = {}) {
+  const maxTotal = opts.maxTotalLines ?? MAX_DIFF_LINES;
+  const maxPerFile = opts.maxLinesPerFile ?? MAX_FILE_LINES;
+
+  const out = [];
+  const skippedFiles = [];
+  const truncatedFiles = [];
+  let totalKept = 0;
+  let fileCount = 0;
+  let curName = null;       // current file (null = preamble before first header)
+  let curKept = 0;
+  let curTruncated = false; // stop emitting this file's lines once true
+  let skippingFile = false; // whole file skipped (budget was gone at its header)
+
+  let pos = 0;
+  while (pos <= diff.length) {
+    let nl = diff.indexOf('\n', pos);
+    if (nl === -1) nl = diff.length;
+    const line = diff.slice(pos, nl);
+
+    if (line.startsWith('diff --git ')) {
+      fileCount++;
+      const m = /^diff --git a\/.* b\/(.*)$/.exec(line);
+      curName = m ? m[1] : line.slice('diff --git '.length);
+      curKept = 0;
+      curTruncated = false;
+      skippingFile = totalKept >= maxTotal;
+      if (skippingFile) {
+        skippedFiles.push(curName);
+      } else {
+        out.push(line);
+        totalKept++; curKept++;
+      }
+    } else if (!skippingFile && !curTruncated) {
+      if ((curName !== null && curKept >= maxPerFile) || totalKept >= maxTotal) {
+        curTruncated = true;
+        const label = curName ?? '(preamble)';
+        truncatedFiles.push(label);
+        out.push(`[...${label} truncated for review budget...]`);
+        totalKept++;
+      } else {
+        out.push(line);
+        totalKept++;
+        if (curName !== null) curKept++;
+      }
+    }
+
+    if (nl === diff.length) break;
+    pos = nl + 1;
+  }
+
+  const truncated = skippedFiles.length > 0 || truncatedFiles.length > 0;
+  if (truncated) {
+    out.push('', `[review budget: ${truncatedFiles.length} file(s) truncated, ${skippedFiles.length} file(s) NOT included]`);
+    if (skippedFiles.length) out.push(`[files NOT included in this diff: ${skippedFiles.join(', ')}]`);
+  }
+  return { text: out.join('\n'), truncated, skippedFiles, truncatedFiles, fileCount };
 }
 
 // Build the request body in code (no string-splicing into JSON). Pins
@@ -163,7 +220,7 @@ export function advisoryExit(verdict) {
 // Render the verdict as a Markdown PR-comment body. The leading HTML marker lets
 // the CI step find-and-update one comment instead of spamming a new one per push.
 // Flag/warning newlines are collapsed so a model string can't break the layout.
-export function renderComment(verdict, { truncated = false } = {}) {
+export function renderComment(verdict, { truncated = false, skippedFiles = [], truncatedFiles = [], fileCount = 0 } = {}) {
   const clean = (s) => String(s).replace(/[\r\n]+/g, ' ');
   const out = ['<!-- logic-reviewer -->', '### 🤖 Cross-vendor logic review (advisory)', ''];
   if (verdict.status === 'REJECT') {
@@ -176,7 +233,22 @@ export function renderComment(verdict, { truncated = false } = {}) {
     out.push('', '**Warnings (non-blocking):**');
     for (const w of verdict.warnings) out.push(`- ${clean(w)}`);
   }
-  if (truncated) out.push('', '_Diff was truncated before review._');
+  // Name every omission: "diff was truncated" reads as covered-everything;
+  // "these files were NOT reviewed" is the honest signal (#20).
+  if (skippedFiles.length || truncatedFiles.length) {
+    const included = fileCount ? ` (${fileCount - skippedFiles.length}/${fileCount} files included)` : '';
+    out.push('', `⚠️ **Partial review** — the diff exceeded the review budget${included}.`);
+    if (skippedFiles.length) {
+      out.push('', '**NOT reviewed:**');
+      for (const f of skippedFiles) out.push(`- \`${clean(f)}\``);
+    }
+    if (truncatedFiles.length) {
+      out.push('', '**Partially reviewed (truncated):**');
+      for (const f of truncatedFiles) out.push(`- \`${clean(f)}\``);
+    }
+  } else if (truncated) {
+    out.push('', '_Diff was truncated before review._');
+  }
   out.push('', '_Independent second-vendor model — verify each finding before acting; it can be wrong._');
   return out.join('\n');
 }
@@ -185,10 +257,13 @@ export function renderComment(verdict, { truncated = false } = {}) {
 // mentions the model, e.g. "... is not a valid model ID") vs a 5xx/network blip?
 export function isModelError(status, bodyText) {
   // 400/404 = unknown/invalid model; 403 can mean a model gated behind a plan.
-  // Require the body to actually mention the model, so a plain auth/credits 403
-  // isn't misread as a model problem.
+  // Require the body to mention the model AND an unavailability phrase — a
+  // generic 400 like "max_tokens exceeds model limit" merely mentions the word
+  // and must not be misread as a deprecated model (#21).
   if (status !== 400 && status !== 403 && status !== 404) return false;
-  return /model/i.test(String(bodyText || ''));
+  const b = String(bodyText || '');
+  if (!/model/i.test(b)) return false;
+  return /(not\s+a?\s*valid|not\s+found|does\s+not\s+exist|no\s+such|invalid|deprecated|unavailable|requires|gated)/i.test(b);
 }
 
 // PR-comment body for a dead model: name it and say exactly how to fix it, so a
@@ -276,9 +351,11 @@ async function main() {
     console.log('✅ No code changes to review.');
     process.exit(0);
   }
-  const { text: diff, truncated } = capDiff(diffRaw);
+  const { text: diff, truncated, skippedFiles, truncatedFiles, fileCount } = capDiff(diffRaw);
   if (truncated) {
-    console.log(`ℹ️  diff exceeded ${MAX_DIFF_LINES} lines — reviewing the first ${MAX_DIFF_LINES}.`);
+    console.log(`ℹ️  diff exceeded the review budget (${MAX_FILE_LINES}/file, ${MAX_DIFF_LINES} total): ` +
+      `${truncatedFiles.length} file(s) truncated, ${skippedFiles.length} of ${fileCount} file(s) not included.`);
+    if (skippedFiles.length) console.log(`   NOT reviewed: ${skippedFiles.join(', ')}`);
   }
 
   const model = process.env.LOGIC_REVIEWER_MODEL || 'deepseek/deepseek-chat';
@@ -321,7 +398,7 @@ async function main() {
   // failure must not change the advisory outcome.
   if (process.env.REVIEW_COMMENT_FILE) {
     try {
-      fs.writeFileSync(process.env.REVIEW_COMMENT_FILE, renderComment(verdict, { truncated }));
+      fs.writeFileSync(process.env.REVIEW_COMMENT_FILE, renderComment(verdict, { truncated, skippedFiles, truncatedFiles, fileCount }));
     } catch (err) {
       console.warn(`⚠️  could not write REVIEW_COMMENT_FILE (${err.message}); continuing.`);
     }

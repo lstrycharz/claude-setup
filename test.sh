@@ -28,9 +28,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Sandbox everything under $SANDBOX
+# Sandbox everything under $SANDBOX — including logs, so concurrent runs
+# (or two users on one CI box) can't interleave in shared /tmp (#21).
 export HOME="$SANDBOX"
 mkdir -p "$SANDBOX"
+LOGS="$SANDBOX/logs"
+mkdir -p "$LOGS"
 cd "$SANDBOX"
 
 # Sanity check: Node must be available
@@ -46,7 +49,7 @@ echo "(HOME is overridden; your real ~/.claude is untouched)"
 # SECTION: Fresh install
 # ============================================================
 section "Fresh install"
-"$SCRIPT_DIR/install.sh" > /tmp/install-fresh.log 2>&1 || fail "install.sh exited non-zero on fresh install"
+"$SCRIPT_DIR/install.sh" > "$LOGS"/install-fresh.log 2>&1 || fail "install.sh exited non-zero on fresh install"
 
 # Test 1: All files installed
 [ -f "$SANDBOX/.claude/rules/workflow.md" ] && pass "rules/workflow.md installed" || fail "rules/workflow.md missing"
@@ -121,6 +124,7 @@ cat > "$SETTINGS" <<'EOF'
     "allow": ["Bash(npm test)"]
   },
   "model": "haiku",
+  "env": { "ENABLE_TOOL_SEARCH": "false" },
   "hooks": {
     "PostToolUse": [
       { "matcher": "Edit", "hooks": [{ "type": "command", "command": "echo custom" }] }
@@ -135,7 +139,7 @@ cat > "$SETTINGS" <<'EOF'
 }
 EOF
 
-"$SCRIPT_DIR/install.sh" > /tmp/install-preserve.log 2>&1 || fail "install.sh exited non-zero with pre-seeded settings"
+"$SCRIPT_DIR/install.sh" > "$LOGS"/install-preserve.log 2>&1 || fail "install.sh exited non-zero with pre-seeded settings"
 
 # Check preservation — write results to tmp file to avoid subshell counter issue
 TMPRESULTS=$(mktemp)
@@ -152,7 +156,8 @@ const checks = [
   [!allCmds.some(c => c.includes('config-protection.mjs')), 'legacy hook entries migrated away'],
   // …while user-added hooks on the old matcher survive.
   [allCmds.some(c => c.includes('user-custom-pretool')), 'user hook on old matcher preserved'],
-  [s.env && s.env.ENABLE_TOOL_SEARCH === 'true', 'ENABLE_TOOL_SEARCH added']
+  // #21: an explicit user 'false' is a choice, not a gap to fill.
+  [s.env && s.env.ENABLE_TOOL_SEARCH === 'false', 'explicit ENABLE_TOOL_SEARCH=false preserved']
 ];
 for (const [ok, label] of checks) console.log(ok ? 'PASS:' : 'FAIL:', label);
 " > "$TMPRESULTS"
@@ -166,7 +171,7 @@ rm -f "$TMPRESULTS"
 # ============================================================
 section "Idempotent re-install (no duplicate hooks)"
 
-"$SCRIPT_DIR/install.sh" > /tmp/install-idem.log 2>&1 || fail "install.sh exited non-zero on re-run"
+"$SCRIPT_DIR/install.sh" > "$LOGS"/install-idem.log 2>&1 || fail "install.sh exited non-zero on re-run"
 
 # Count only OUR hooks — the seeded user hook legitimately remains.
 HOOK_COUNT=$(node -e "
@@ -431,11 +436,20 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit
 rev "const p=m.buildPayload({systemPrompt:'s',diff:'DIFFBODY',model:'x'}); const u=p.messages.find(x=>x.role==='user').content; process.exit(u.includes('UNTRUSTED')&&u.includes('DIFFBODY')?0:1)" \
   && pass "reviewer: diff is framed as untrusted data (injection guard)" || fail "reviewer: diff not framed as untrusted data"
 
-# --- diff cap (cost/context budget) ---
-rev "const big=Array.from({length:50},(_,i)=>'L'+i).join('\n'); const r=m.capDiff(big,10); process.exit(r.truncated&&r.text.split('\n').length<=12?0:1)" \
+# --- diff cap (cost/context budget) — per-file caps, named omissions (#20) ---
+rev "const big=Array.from({length:50},(_,i)=>'L'+i).join('\n'); const r=m.capDiff(big,{maxTotalLines:10}); process.exit(r.truncated&&r.text.split('\n').length<=16?0:1)" \
   && pass "reviewer: capDiff truncates oversized diffs" || fail "reviewer: capDiff did not truncate"
-rev "const r=m.capDiff('a\nb',1000); process.exit(!r.truncated&&r.text==='a\nb'?0:1)" \
+rev "const r=m.capDiff('a\nb'); process.exit(!r.truncated&&r.text==='a\nb'?0:1)" \
   && pass "reviewer: capDiff leaves small diffs intact" || fail "reviewer: capDiff altered a small diff"
+# a file over the per-file cap is truncated AND named
+rev "const f='diff --git a/big.js b/big.js\n'+Array.from({length:30},(_,i)=>'+'+i).join('\n'); const r=m.capDiff(f,{maxLinesPerFile:5,maxTotalLines:1000}); process.exit(r.truncatedFiles.includes('big.js')&&r.text.includes('big.js truncated')?0:1)" \
+  && pass "reviewer: capDiff truncates per file and names the file" || fail "reviewer: capDiff per-file truncation missing/unnamed"
+# a file past the total budget is skipped entirely AND named — no silent omission
+rev "const d='diff --git a/a.js b/a.js\n'+Array.from({length:20},(_,i)=>'+'+i).join('\n')+'\ndiff --git a/zz.js b/zz.js\n+evil'; const r=m.capDiff(d,{maxLinesPerFile:100,maxTotalLines:10}); process.exit(r.skippedFiles.includes('zz.js')&&r.text.includes('NOT included')&&r.text.includes('zz.js')?0:1)" \
+  && pass "reviewer: capDiff names files skipped by the total budget (evasion guard)" || fail "reviewer: capDiff silently dropped a file"
+# untouched multi-file diffs report every file included
+rev "const d='diff --git a/a.js b/a.js\n+x\ndiff --git a/b.js b/b.js\n+y'; const r=m.capDiff(d); process.exit(!r.truncated&&r.fileCount===2&&r.skippedFiles.length===0?0:1)" \
+  && pass "reviewer: capDiff reports file count with zero omissions when under budget" || fail "reviewer: capDiff miscounted an under-budget diff"
 
 # --- verdict parsing (structured output, not regex) ---
 rev "const v=m.parseVerdict({choices:[{message:{content:JSON.stringify({status:'PASS',critical_flags:[],warnings:[]})}}]}); process.exit(v.status==='PASS'?0:1)" \
@@ -503,6 +517,9 @@ rev "const c=m.renderComment({status:'REJECT',critical_flags:['boomflag'],warnin
   && pass "reviewer: renderComment shows REJECT flags + advisory disclaimer" || fail "reviewer: renderComment REJECT missing flags/disclaimer"
 rev "const c=m.renderComment({status:'REJECT',critical_flags:['a\nb'],warnings:[]}); process.exit(c.split('\n').filter(l=>l.startsWith('- ')).length===1?0:1)" \
   && pass "reviewer: renderComment collapses newlines in a flag to one bullet" || fail "reviewer: renderComment let a flag span multiple bullets"
+# #20: skipped files are NAMED in the PR comment, with an included/total count
+rev "const c=m.renderComment({status:'PASS',critical_flags:[],warnings:[]},{truncated:true,skippedFiles:['zz.js'],truncatedFiles:['big.js'],fileCount:3}); process.exit(/NOT reviewed/.test(c)&&c.includes('zz.js')&&c.includes('big.js')&&c.includes('2/3')?0:1)" \
+  && pass "reviewer: renderComment names skipped + truncated files with counts" || fail "reviewer: renderComment hid a review omission"
 
 # --- Deprecated/unknown model: detect it and warn distinctly (not a generic blip) ---
 rev "process.exit(m.isModelError(400,'deepseek/x is not a valid model ID')===true?0:1)" \
@@ -515,6 +532,8 @@ rev "process.exit(m.isModelError(403,'invalid api key')===false?0:1)" \
   && pass "reviewer: isModelError ignores a 403 with no model mention (auth, not model)" || fail "reviewer: isModelError misclassified an auth 403"
 rev "process.exit(m.isModelError(500,'internal server error')===false?0:1)" \
   && pass "reviewer: isModelError does NOT treat a 500 as a model problem" || fail "reviewer: isModelError misclassified a 500"
+rev "process.exit(m.isModelError(400,'max_tokens exceeds model limit')===false?0:1)" \
+  && pass "reviewer: isModelError ignores a generic 400 that merely mentions 'model'" || fail "reviewer: isModelError misclassified a generic 400"
 rev "const c=m.renderModelWarning('deepseek/deepseek-v4-pro','not a valid model ID'); process.exit(c.includes('deepseek/deepseek-v4-pro')&&c.includes('LOGIC_REVIEWER_MODEL')&&c.includes('logic-reviewer')?0:1)" \
   && pass "reviewer: renderModelWarning names the model + how to fix it" || fail "reviewer: renderModelWarning missing model/fix/marker"
 
@@ -527,7 +546,7 @@ rm -rf "$SANDBOX/.claude" "$SANDBOX/bin"
 mkdir -p "$SANDBOX/.claude"
 echo "NOT VALID JSON {{{" > "$SETTINGS"
 
-if "$SCRIPT_DIR/install.sh" > /tmp/install-malformed.log 2>&1; then
+if "$SCRIPT_DIR/install.sh" > "$LOGS"/install-malformed.log 2>&1; then
   # Recovery must be LOUD, not silent: valid settings.json + a backup of the
   # unparseable original (#15 — a typo must not cost the user their config).
   if node -e "require('$SETTINGS')" 2>/dev/null; then
@@ -557,7 +576,7 @@ git init > /dev/null 2>&1
 git config user.email test@example.com
 git config user.name Test
 
-"$SANDBOX/bin/init-claude" > /tmp/init-claude-1.log 2>&1 || fail "init-claude failed in fresh project"
+"$SANDBOX/bin/init-claude" > "$LOGS"/init-claude-1.log 2>&1 || fail "init-claude failed in fresh project"
 
 [ -d "$PROJECT/.claude" ] && pass "init-claude creates .claude/" || fail "init-claude did not create .claude/"
 [ -f "$PROJECT/.claude/CLAUDE.md" ] && pass "init-claude copies CLAUDE.md" || fail "init-claude did not copy CLAUDE.md"
@@ -581,7 +600,7 @@ cd "$PROJECT2"
 echo "existing content" > .gitignore
 git init > /dev/null 2>&1
 
-"$SANDBOX/bin/init-claude" > /tmp/init-claude-2.log 2>&1 || fail "init-claude failed with existing .gitignore"
+"$SANDBOX/bin/init-claude" > "$LOGS"/init-claude-2.log 2>&1 || fail "init-claude failed with existing .gitignore"
 
 GITIGNORE_CONTENT=$(cat "$PROJECT2/.gitignore")
 [ "$GITIGNORE_CONTENT" = "existing content" ] && pass "init-claude preserves existing .gitignore" || fail "init-claude overwrote existing .gitignore"
@@ -607,7 +626,7 @@ mkdir -p "$SANDBOX/initshims"
 printf '#!/bin/bash\nexit 0\n' > "$SANDBOX/initshims/uv"; chmod +x "$SANDBOX/initshims/uv"
 # Restricted PATH: coreutils + the uv shim, but NOT the host dirs where pytest
 # lives (/usr/local/bin, /opt/homebrew/bin) — otherwise host pytest masks the bug.
-PATH="$SANDBOX/initshims:/usr/bin:/bin" "$SANDBOX/bin/init-claude" > /tmp/init-uv.log 2>&1
+PATH="$SANDBOX/initshims:/usr/bin:/bin" "$SANDBOX/bin/init-claude" > "$LOGS"/init-uv.log 2>&1
 if [ -f "$PYUV/.claude/PROGRESS.md" ] && grep -qi "test floor gap" "$PYUV/.claude/PROGRESS.md"; then
   fail "init-claude false-flags a uv project (uv.lock + uv) as a missing test floor"
 else
@@ -621,7 +640,7 @@ cd "$SANDBOX"
 section "init-claude blocks on existing .claude/"
 
 cd "$PROJECT"  # .claude/ already exists from earlier test
-if "$SANDBOX/bin/init-claude" > /tmp/init-claude-3.log 2>&1; then
+if "$SANDBOX/bin/init-claude" > "$LOGS"/init-claude-3.log 2>&1; then
   fail "init-claude did not block when .claude/ already exists"
 else
   pass "init-claude exits non-zero when .claude/ already exists"
@@ -636,7 +655,7 @@ section "update-claude upgrades an existing project"
 
 # Blocks where there is no .claude/ (that's init-claude's job, not this).
 UC_NONE="$SANDBOX/uc-no-claude"; mkdir -p "$UC_NONE"
-if ( cd "$UC_NONE" && "$SANDBOX/bin/update-claude" ) > /tmp/uc-none.log 2>&1; then
+if ( cd "$UC_NONE" && "$SANDBOX/bin/update-claude" ) > "$LOGS"/uc-none.log 2>&1; then
   fail "update-claude ran without a .claude/ (should block)"
 else
   pass "update-claude blocks when there is no .claude/"
@@ -646,18 +665,18 @@ cd "$PROJECT"   # has .claude/ scaffolded from the init-claude tests
 # Refreshes infrastructure files (overwrites stale reviewer code + prompt).
 echo "OLD-SENTINEL" > .claude/bin/review-diff.mjs
 echo "OLD-PROMPT"   > .claude/review/logic-reviewer.md
-"$SANDBOX/bin/update-claude" > /tmp/uc-run.log 2>&1
+"$SANDBOX/bin/update-claude" > "$LOGS"/uc-run.log 2>&1
 grep -q "OLD-SENTINEL" .claude/bin/review-diff.mjs && fail "update-claude did not refresh review-diff.mjs" || pass "update-claude refreshes the reviewer code"
 grep -q "OLD-PROMPT" .claude/review/logic-reviewer.md && fail "update-claude did not refresh the prompt" || pass "update-claude refreshes the reviewer prompt"
 
 # Preserves a customized verify.sh — never clobbers your project's commands.
 echo "MY-CUSTOM-VERIFY" > .claude/verify.sh
-"$SANDBOX/bin/update-claude" > /tmp/uc-run2.log 2>&1
+"$SANDBOX/bin/update-claude" > "$LOGS"/uc-run2.log 2>&1
 grep -q "MY-CUSTOM-VERIFY" .claude/verify.sh && pass "update-claude preserves a customized verify.sh" || fail "update-claude clobbered a customized verify.sh"
 
 # Restores verify.sh if it is missing.
 rm -f .claude/verify.sh
-"$SANDBOX/bin/update-claude" > /tmp/uc-run3.log 2>&1
+"$SANDBOX/bin/update-claude" > "$LOGS"/uc-run3.log 2>&1
 [ -f .claude/verify.sh ] && pass "update-claude restores a missing verify.sh" || fail "update-claude did not restore verify.sh"
 cd "$SANDBOX"
 
@@ -683,10 +702,10 @@ cat > "$SETTINGS" <<'EOF'
   }
 }
 EOF
-"$SCRIPT_DIR/install.sh" > /tmp/install-before-uninstall.log 2>&1
+"$SCRIPT_DIR/install.sh" > "$LOGS"/install-before-uninstall.log 2>&1
 
 # Run uninstall with auto-"no" for the template prompt
-echo "n" | "$SCRIPT_DIR/uninstall.sh" > /tmp/uninstall.log 2>&1 || fail "uninstall.sh exited non-zero"
+echo "n" | "$SCRIPT_DIR/uninstall.sh" > "$LOGS"/uninstall.log 2>&1 || fail "uninstall.sh exited non-zero"
 
 # Verify our files are gone
 [ ! -f "$SANDBOX/.claude/hooks/dispatch.mjs" ] && pass "uninstall removed dispatch.mjs" || fail "uninstall left dispatch.mjs"
