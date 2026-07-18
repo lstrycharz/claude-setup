@@ -19,24 +19,27 @@ These are instructions that Claude reads automatically every time you start a co
 
 ### Hooks (the guardrails)
 
-These run automatically in the background and stop Claude from doing dumb things:
+These ship inside the plugin and run automatically in the background, stopping Claude from doing dumb things:
 
 | What it prevents | How |
 |---|---|
-| **Weakening your code rules** | Blocks Claude from editing your linter/formatter configs. It has to fix the code, not loosen the rules. |
-| **Skipping safety checks** | Blocks `--no-verify` on git commits. Your secret scanner stays on. |
-| **Committing with no floor** | Blocks `git commit` in a code repo that has no pre-commit gate installed — so commits can't ship with nothing checking them. Points you at `init-claude`. |
-| **Running out of memory** | After 50 actions, reminds Claude to save progress and free up space with `/compact`. |
+| **Weakening your code rules** | Blocks Claude from editing linter/formatter/typecheck/test-runner configs — and the verification floor's own files. It has to fix the code, not loosen the rules. |
+| **Skipping safety checks** | Blocks `--no-verify` (and its `-n` short form, and `core.hooksPath` tricks) on git commands. Your secret scanner stays on. |
+| **Committing with no floor** | Blocks `git commit` in a code repo that has no executable pre-commit gate — so commits can't ship with nothing checking them. Points you at `/init-floor`. |
+| **Sneaking past the string checks** | A state-based watchdog runs *after* every terminal command: if a commit landed in a floorless repo — no matter how the command was spelled — Claude is told to verify and amend. |
+| **Running out of memory** | After 50 edits, suggests saving progress and freeing context with `/clear` or `/compact`. |
 
 ### The deterministic floor (gates, not vibes)
 
-Every project gets one `.claude/verify.sh` — **the single source of truth for lint + typecheck + test.** Three gates run that same script, so what the agent runs, what blocks your commit, and what blocks a merge are identical:
+Every project gets one `.claude/verify.sh` — **the single source of truth for lint + typecheck + test.** It has two tiers (`--quick` = lint + typecheck; full = adds tests), and three gates run that same script, so what the agent runs, what blocks your commit, and what blocks a merge can never drift apart:
 
-1. **Pre-commit hook** — runs `verify.sh` (+ secret scan) on every commit, agent or human.
-2. **`enforce-floor` hook** — blocks the agent from committing a code repo that has no floor wired at all.
-3. **CI templates** (`.claude/ci/`) — run `verify.sh` on PRs; enable branch protection (`BRANCH_PROTECTION.md`) to make red **block the merge**.
+1. **Pre-commit hook** — secret scan + the *quick* tier, run against the **staged snapshot** (what the commit actually records), on every commit, agent or human. Fast, so granular save-point commits stay cheap.
+2. **Pre-push hook** — the *full* floor (adds tests) before anything leaves your machine.
+3. **CI templates** (`.claude/ci/`) — run the full `verify.sh` on PRs; enable branch protection (`BRANCH_PROTECTION.md`) to make red **block the merge**.
 
-`init-claude` auto-detects your stack, drops starter ESLint / TS / Prettier / ruff configs, and **loudly flags a missing test framework** (writing it into `PROGRESS.md`) instead of letting untested code ship silently. The rule: gates the machine enforces, not instructions a human has to remember.
+The `enforce-floor` guards back these up: a pre-command check blocks `git commit` when no floor is wired, and the post-command watchdog catches a commit that landed without one regardless of how the command was spelled.
+
+`/init-floor` auto-detects your stack, drops starter ESLint / TS / Prettier / ruff configs, and **loudly flags a missing test framework** (writing it into `PROGRESS.md`) instead of letting untested code ship silently. The rule: gates the machine enforces, not instructions a human has to remember.
 
 `verify.sh` picks the Node manager from the lockfile (pnpm / yarn / bun / npm) and runs Python tools through the project env (`uv run` / `poetry run`) — so it never false-greens by running `npm` against a pnpm tree or a global `pytest` that collects nothing. **Monorepos** (e.g. a Python backend + Node frontend in one repo) opt in explicitly — point it at each sub-project and it runs and accumulates every suite:
 
@@ -117,9 +120,23 @@ cd claude-setup
 ./install.sh       # copies global rules + playbooks; checks Node + gitleaks
 ```
 
-**Upgrading from the old copied install?** Run `./uninstall.sh` once — it
-removes the old copied hooks/commands/agents and strips their wiring from
-`settings.json` (your own settings are preserved).
+### Already had this installed the old way?
+
+Before the plugin, `install.sh` copied hooks/commands/agents into `~/.claude/`
+and wired them into `settings.json`. On each computer that ran that old
+install, do this **once** (order matters — install the plugin first so the
+guardrails never go dark):
+
+```bash
+# 1. inside Claude Code: install the plugin (Step 1 above)
+# 2. then, from the repo checkout:
+./uninstall.sh     # removes the old copied files + their settings.json wiring
+./install.sh       # reinstalls the global rules (that's all it does now)
+```
+
+Your own permissions, model choice, env, and custom hooks in `settings.json`
+are preserved — only the claude-setup entries are stripped. A computer that
+never ran the old install needs no cleanup: just Step 1.
 
 ### Step 2: Set up a new project
 
@@ -164,9 +181,14 @@ You start Claude Code
 
 ## What's in the Box
 
+The repo **is** the plugin **and** its own marketplace — install it straight from GitHub, no registry involved.
+
 ```
 claude-setup/
-├── global-rules/              # Rules Claude follows in every project
+├── .claude-plugin/            # Makes this repo an installable Claude Code plugin
+│   ├── plugin.json            # Name + version (bump this to ship an update)
+│   └── marketplace.json       # Makes the repo its own marketplace
+├── global-rules/              # Rules Claude follows in every project (installed by install.sh)
 │   ├── workflow.md            # How to plan, build, track progress, and hand off between sessions
 │   ├── qa.md                  # Write tests first, always (Red/Green/Refactor)
 │   ├── testing.md             # How to write good tests (pytest, vitest, Playwright)
@@ -177,40 +199,42 @@ claude-setup/
 │       └── react.md           # React-specific patterns
 ├── playbooks/                 # Long-form references (pulled when needed, not auto-loaded)
 │   └── AGENT_PROJECT_PLAYBOOK.md  # Companion to agent-design.md (~270 lines)
-├── hooks/                     # Automatic safety guardrails
-│   ├── config-protection.mjs  # Don't let Claude weaken your linter rules
-│   ├── block-no-verify.mjs    # Don't let Claude skip pre-commit hooks
-│   ├── enforce-floor.mjs      # Don't let Claude commit a code repo with no floor
-│   └── suggest-compact.mjs    # Remind Claude to save progress and free memory
-├── commands/                  # Slash commands you can run on demand
+├── hooks/                     # Automatic safety guardrails (ship inside the plugin)
+│   ├── hooks.json             # Wires the dispatcher into Claude Code's hook events
+│   └── dispatch.mjs           # One process per event: config protection, no-verify guard,
+│                              #   floor enforcement, commit watchdog, compact nudge
+├── commands/                  # Slash commands (ship inside the plugin)
 │   ├── code-review.md         # /code-review
 │   ├── security-scan.md       # /security-scan
-│   └── logic-review.md        # /logic-review (cross-vendor review + supervised fix)
-├── agents/                    # Specialized sub-agents
+│   ├── logic-review.md        # /logic-review (cross-vendor review + supervised fix)
+│   ├── init-floor.md          # /init-floor — scaffold a new project's floor
+│   └── update-floor.md        # /update-floor — refresh a project's floor infrastructure
+├── agents/                    # Specialized sub-agents (ship inside the plugin)
 │   ├── code-reviewer.md       # Reviews code with fresh eyes (used by /code-review)
 │   └── security-reviewer.md   # Scans for vulnerabilities (used by /security-scan)
-├── template/                  # Starter files for new projects
+├── template/                  # Starter files for new projects (read from inside the plugin)
 │   ├── CLAUDE.md              # Project instructions (auto-filled after first plan)
 │   ├── CLAUDE.local.md        # Your personal preferences (not shared with team)
 │   ├── PROGRESS.md            # Cross-session progress tracking
-│   ├── verify.sh              # The deterministic floor (lint + typecheck + test)
-│   ├── settings.json          # Blocks Claude from reading .env files and secrets
+│   ├── verify.sh              # The deterministic floor (two tiers: --quick / full)
+│   ├── settings.json          # Deny-rule speed bumps for secret reads + dangerous commands
 │   ├── settings.local.json    # Your personal command overrides
 │   ├── .project-gitignore     # Blocks secrets, keys, credentials from git
-│   ├── .pre-commit-hook       # Scans commits for leaked secrets
+│   ├── .pre-commit-hook       # Secret scan + quick floor on the staged snapshot
+│   ├── .pre-push-hook         # Full floor (adds tests) before anything leaves the machine
 │   ├── bin/review-diff.mjs    # The cross-vendor logic reviewer (advisory)
 │   ├── review/                # The reviewer's prompt / rubric
 │   ├── ci/                    # CI templates: floor + reviewer (GitHub & Bitbucket)
 │   └── configs/               # Starter eslint / tsconfig / prettier / ruff
 ├── bin/
-│   ├── init-claude            # The command that sets up a new project
-│   └── update-claude          # Upgrades an existing project's .claude/ to the latest
-├── install.sh                 # The command that sets up a new computer
-├── uninstall.sh               # Safely removes everything this setup installed
+│   ├── init-claude            # The scaffolder behind /init-floor (works from a checkout too)
+│   └── update-claude          # The updater behind /update-floor
+├── install.sh                 # Installs the global rules + playbooks (the plugin covers the rest)
+├── uninstall.sh               # Removes the rules; also cleans up legacy pre-plugin installs
 ├── verify.sh                  # This repo's own floor — it gates its own PRs
 ├── .github/workflows/         # Runs the floor + reviewer on this repo's own PRs
-├── test.sh                    # Automated test suite (114 assertions, runs in sandbox)
-├── Dockerfile                 # Ubuntu container for cross-platform testing
+├── test.sh                    # Automated test suite (150+ assertions, runs in a sandbox)
+├── Dockerfile                 # Node 22 container for cross-platform testing
 ├── docker-test.sh             # Runs test.sh in the Docker container
 └── TESTING.md                 # Manual scenario checklist for coworker validation
 ```
