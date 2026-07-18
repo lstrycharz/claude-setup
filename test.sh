@@ -57,10 +57,7 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude/rules/agent-design.md" ] && pass "rules/agent-design.md installed" || fail "rules/agent-design.md missing"
 [ -f "$SANDBOX/.claude/rules/frontend/react.md" ] && pass "rules/frontend/react.md installed" || fail "rules/frontend/react.md missing"
 [ -f "$SANDBOX/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md" ] && pass "playbooks/AGENT_PROJECT_PLAYBOOK.md installed" || fail "playbooks/AGENT_PROJECT_PLAYBOOK.md missing"
-[ -f "$SANDBOX/.claude/hooks/config-protection.mjs" ] && pass "hooks/config-protection.mjs installed" || fail "hooks/config-protection.mjs missing"
-[ -f "$SANDBOX/.claude/hooks/block-no-verify.mjs" ] && pass "hooks/block-no-verify.mjs installed" || fail "hooks/block-no-verify.mjs missing"
-[ -f "$SANDBOX/.claude/hooks/suggest-compact.mjs" ] && pass "hooks/suggest-compact.mjs installed" || fail "hooks/suggest-compact.mjs missing"
-[ -f "$SANDBOX/.claude/hooks/enforce-floor.mjs" ] && pass "hooks/enforce-floor.mjs installed" || fail "hooks/enforce-floor.mjs missing"
+[ -f "$SANDBOX/.claude/hooks/dispatch.mjs" ] && pass "hooks/dispatch.mjs installed" || fail "hooks/dispatch.mjs missing"
 [ -f "$SANDBOX/.claude-template/verify.sh" ] && pass "template/verify.sh installed" || fail "template/verify.sh missing"
 [ -f "$SANDBOX/.claude-template/ci/github-actions.yml" ] && pass "template/ci installed" || fail "template/ci missing"
 [ -f "$SANDBOX/.claude-template/configs/eslint.config.mjs.tpl" ] && pass "template/configs installed" || fail "template/configs missing"
@@ -96,7 +93,7 @@ let count = 0;
 for (const e of pre) if (Array.isArray(e.hooks)) count += e.hooks.length;
 console.log(count);
 ")
-  [ "$HOOK_COUNT" = "4" ] && pass "settings.json has exactly 4 PreToolUse hooks" || fail "settings.json has $HOOK_COUNT hooks (expected 4)"
+  [ "$HOOK_COUNT" = "2" ] && pass "settings.json has exactly 2 PreToolUse hooks (one dispatcher per matcher)" || fail "settings.json has $HOOK_COUNT hooks (expected 2)"
 
   # #10: the edit matcher must cover MultiEdit/NotebookEdit too, or config
   # protection is bypassable by tool choice.
@@ -126,6 +123,12 @@ cat > "$SETTINGS" <<'EOF'
   "hooks": {
     "PostToolUse": [
       { "matcher": "Edit", "hooks": [{ "type": "command", "command": "echo custom" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Write|Edit", "hooks": [
+        { "type": "command", "command": "node /old/hooks/config-protection.mjs" },
+        { "type": "command", "command": "echo user-custom-pretool" }
+      ] }
     ]
   }
 }
@@ -137,11 +140,17 @@ EOF
 TMPRESULTS=$(mktemp)
 node -e "
 const s = require('$SETTINGS');
+const pre = (s.hooks && s.hooks.PreToolUse) || [];
+const allCmds = pre.flatMap(e => e.hooks || []).map(h => h.command || '');
 const checks = [
   [s.permissions && s.permissions.allow && s.permissions.allow[0] === 'Bash(npm test)', 'custom permission preserved'],
   [s.model === 'haiku', 'custom model preserved'],
   [s.hooks && s.hooks.PostToolUse && s.hooks.PostToolUse.length > 0, 'custom PostToolUse preserved'],
-  [s.hooks && s.hooks.PreToolUse && s.hooks.PreToolUse.length > 0, 'our PreToolUse hooks added'],
+  [pre.length > 0, 'our PreToolUse hooks added'],
+  // #19 migration: legacy per-hook entries under old matchers are stripped…
+  [!allCmds.some(c => c.includes('config-protection.mjs')), 'legacy hook entries migrated away'],
+  // …while user-added hooks on the old matcher survive.
+  [allCmds.some(c => c.includes('user-custom-pretool')), 'user hook on old matcher preserved'],
   [s.env && s.env.ENABLE_TOOL_SEARCH === 'true', 'ENABLE_TOOL_SEARCH added']
 ];
 for (const [ok, label] of checks) console.log(ok ? 'PASS:' : 'FAIL:', label);
@@ -158,14 +167,15 @@ section "Idempotent re-install (no duplicate hooks)"
 
 "$SCRIPT_DIR/install.sh" > /tmp/install-idem.log 2>&1 || fail "install.sh exited non-zero on re-run"
 
+# Count only OUR hooks — the seeded user hook legitimately remains.
 HOOK_COUNT=$(node -e "
 const s = require('$SETTINGS');
 const pre = (s.hooks && s.hooks.PreToolUse) || [];
 let count = 0;
-for (const e of pre) if (Array.isArray(e.hooks)) count += e.hooks.length;
+for (const e of pre) for (const h of (e.hooks || [])) if ((h.command || '').includes('dispatch.mjs')) count++;
 console.log(count);
 ")
-[ "$HOOK_COUNT" = "4" ] && pass "no duplicate hooks after re-install (count=4)" || fail "duplicate hooks after re-install (count=$HOOK_COUNT)"
+[ "$HOOK_COUNT" = "2" ] && pass "no duplicate hooks after re-install (count=2)" || fail "duplicate hooks after re-install (count=$HOOK_COUNT)"
 
 # ============================================================
 # SECTION: Hook behavior
@@ -173,100 +183,100 @@ console.log(count);
 section "Hook behavior"
 
 # config-protection blocks
-OUT=$(echo '{"tool_input":{"file_path":".eslintrc.json"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":".eslintrc.json"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks .eslintrc.json" || fail "config-protection did NOT block .eslintrc.json"
 
 # config-protection allows
-OUT=$(echo '{"tool_input":{"file_path":"src/app.ts"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"src/app.ts"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "config-protection allows src/app.ts" || fail "config-protection wrongly blocked src/app.ts"
 
 # #10: typecheck/test-runner configs are the same gaming vector as lint configs
-OUT=$(echo '{"tool_input":{"file_path":"tsconfig.json"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"tsconfig.json"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks tsconfig.json" || fail "config-protection did NOT block tsconfig.json"
-OUT=$(echo '{"tool_input":{"file_path":"vitest.config.ts"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"vitest.config.ts"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks vitest.config.ts" || fail "config-protection did NOT block vitest.config.ts"
 
 # #10: the floor itself is not agent-editable (path-based, not basename-based)
-OUT=$(echo '{"tool_input":{"file_path":"myproj/.claude/verify.sh"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"myproj/.claude/verify.sh"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks .claude/verify.sh" || fail "config-protection did NOT block .claude/verify.sh"
-OUT=$(echo '{"tool_input":{"file_path":"myproj/.claude/verify.allow-no-tests"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"myproj/.claude/verify.allow-no-tests"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks the allow-no-tests marker" || fail "config-protection did NOT block the allow-no-tests marker"
-OUT=$(echo '{"tool_input":{"file_path":"myproj/.git/hooks/pre-commit"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"myproj/.git/hooks/pre-commit"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "config-protection blocks .git/hooks/ files" || fail "config-protection did NOT block .git/hooks/ files"
 # …but a verify.sh OUTSIDE .claude/ is an ordinary file
-OUT=$(echo '{"tool_input":{"file_path":"scripts/verify.sh"}}' | node "$SANDBOX/.claude/hooks/config-protection.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"scripts/verify.sh"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "config-protection allows a verify.sh outside .claude/" || fail "config-protection wrongly blocked scripts/verify.sh"
 
 # block-no-verify blocks
-OUT=$(echo '{"tool_input":{"command":"git commit --no-verify"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git commit --no-verify"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks --no-verify" || fail "block-no-verify did NOT block --no-verify"
 
 # block-no-verify allows
-OUT=$(echo '{"tool_input":{"command":"git commit -m test"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git commit -m test"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify allows normal commit" || fail "block-no-verify wrongly blocked normal commit"
 
 # #6: commit's short form -n is the same flag — must be blocked
-OUT=$(echo '{"tool_input":{"command":"git commit -n -m test"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git commit -n -m test"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks commit -n (short form)" || fail "block-no-verify did NOT block commit -n"
-OUT=$(echo '{"tool_input":{"command":"git commit -an -m test"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git commit -an -m test"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks bundled -an" || fail "block-no-verify did NOT block bundled -an"
 # #6: core.hooksPath overrides disable hooks wholesale — must be blocked
-OUT=$(echo '{"tool_input":{"command":"git -c core.hooksPath=/dev/null commit -m x"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git -c core.hooksPath=/dev/null commit -m x"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks core.hooksPath -c override" || fail "block-no-verify did NOT block core.hooksPath override"
-OUT=$(echo '{"tool_input":{"command":"git config core.hooksPath /tmp/nohooks"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git config core.hooksPath /tmp/nohooks"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "block-no-verify blocks git config core.hooksPath" || fail "block-no-verify did NOT block git config core.hooksPath"
 # regression guards: legitimate flags that merely resemble -n stay allowed
-OUT=$(echo '{"tool_input":{"command":"git commit --amend -m fix"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git commit --amend -m fix"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify allows commit --amend" || fail "block-no-verify wrongly blocked --amend"
-OUT=$(echo '{"tool_input":{"command":"git log -n 5"}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git log -n 5"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify allows git log -n 5" || fail "block-no-verify wrongly blocked git log -n"
 # quoted mentions of a flag are data, not a bypass — must NOT block (false
 # positives teach the agent to obfuscate commands)
-OUT=$(echo '{"tool_input":{"command":"echo \"git commit -n is the short form\""}}' | node "$SANDBOX/.claude/hooks/block-no-verify.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"echo \"git commit -n is the short form\""}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "block-no-verify ignores flags inside quoted strings" || fail "block-no-verify false-blocked a quoted mention"
 
 # suggest-compact never blocks
-OUT=$(echo '{"tool_input":{"file_path":"src/app.ts"}}' | node "$SANDBOX/.claude/hooks/suggest-compact.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"file_path":"src/app.ts"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "suggest-compact never blocks" || fail "suggest-compact wrongly blocked"
 
 # enforce-floor: allows non-commit git commands
-OUT=$(echo '{"tool_input":{"command":"git status"}}' | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo '{"tool_input":{"command":"git status"}}' | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows non-commit git" || fail "enforce-floor wrongly blocked git status"
 
 # enforce-floor: blocks commit in a code repo (package.json) with no pre-commit hook
 EF_REPO="$SANDBOX/ef-nofloor"; mkdir -p "$EF_REPO"; ( cd "$EF_REPO" && git init -q && echo '{}' > package.json )
-OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor blocks commit when no floor wired" || fail "enforce-floor did NOT block missing floor"
 
 # enforce-floor: "git commit" inside an echo/string is NOT a real commit (W7)
-OUT=$(echo "{\"tool_input\":{\"command\":\"echo 'see git commit docs'\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"echo 'see git commit docs'\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor ignores 'git commit' inside a string/echo" || fail "enforce-floor false-blocked a string mentioning git commit"
 # enforce-floor: still blocks a real chained commit (regression guard for the anchor)
-OUT=$(echo "{\"tool_input\":{\"command\":\"true && git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"true && git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor still blocks a chained 'git commit'" || fail "enforce-floor missed a chained git commit"
 
 # #6: bypass shapes that dodged the old regex must still be gated
-OUT=$(echo "{\"tool_input\":{\"command\":\"(git commit -m x)\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"(git commit -m x)\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor gates a subshell commit" || fail "enforce-floor missed a subshell commit"
-OUT=$(printf '{"tool_input":{"command":"echo hi\\ngit commit -m x"},"cwd":"%s"}' "$EF_REPO" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(printf '{"tool_input":{"command":"echo hi\\ngit commit -m x"},"cwd":"%s"}' "$EF_REPO" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor gates a newline-separated commit" || fail "enforce-floor missed a newline-separated commit"
-OUT=$(echo "{\"tool_input\":{\"command\":\"GIT_AUTHOR_NAME=x git commit -m y\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"GIT_AUTHOR_NAME=x git commit -m y\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor gates an env-var-prefixed commit" || fail "enforce-floor missed an env-var-prefixed commit"
 
 # #6: a NON-executable pre-commit is silently skipped by git — not a wired floor
 EF_NOEXEC="$SANDBOX/ef-noexec"; mkdir -p "$EF_NOEXEC"; ( cd "$EF_NOEXEC" && git init -q && echo '{}' > package.json )
 touch "$EF_NOEXEC/.git/hooks/pre-commit"   # exists, but no exec bit
-OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_NOEXEC\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_NOEXEC\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor blocks when pre-commit exists but is not executable" || fail "enforce-floor accepted a non-executable pre-commit"
 
 # enforce-floor: allows commit once the pre-commit hook exists
 touch "$EF_REPO/.git/hooks/pre-commit"; chmod +x "$EF_REPO/.git/hooks/pre-commit"
-OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows commit when floor wired" || fail "enforce-floor blocked despite floor present"
 
 # enforce-floor: allows commit in a non-code repo (no manifest)
 EF_DOCS="$SANDBOX/ef-docs"; mkdir -p "$EF_DOCS"; ( cd "$EF_DOCS" && git init -q && echo hi > README.md )
-OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_DOCS\"}" | node "$SANDBOX/.claude/hooks/enforce-floor.mjs" 2>/dev/null; echo "EXIT:$?")
+OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_DOCS\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows commit in non-code repo" || fail "enforce-floor wrongly blocked non-code repo"
 
 # ============================================================
@@ -660,9 +670,7 @@ EOF
 echo "n" | "$SCRIPT_DIR/uninstall.sh" > /tmp/uninstall.log 2>&1 || fail "uninstall.sh exited non-zero"
 
 # Verify our files are gone
-[ ! -f "$SANDBOX/.claude/hooks/config-protection.mjs" ] && pass "uninstall removed config-protection.mjs" || fail "uninstall left config-protection.mjs"
-[ ! -f "$SANDBOX/.claude/hooks/block-no-verify.mjs" ] && pass "uninstall removed block-no-verify.mjs" || fail "uninstall left block-no-verify.mjs"
-[ ! -f "$SANDBOX/.claude/hooks/suggest-compact.mjs" ] && pass "uninstall removed suggest-compact.mjs" || fail "uninstall left suggest-compact.mjs"
+[ ! -f "$SANDBOX/.claude/hooks/dispatch.mjs" ] && pass "uninstall removed dispatch.mjs" || fail "uninstall left dispatch.mjs"
 [ ! -f "$SANDBOX/.claude/commands/code-review.md" ] && pass "uninstall removed code-review.md" || fail "uninstall left code-review.md"
 [ ! -f "$SANDBOX/.claude/commands/logic-review.md" ] && pass "uninstall removed logic-review.md" || fail "uninstall left logic-review.md"
 [ ! -f "$SANDBOX/.claude/agents/code-reviewer.md" ] && pass "uninstall removed code-reviewer.md" || fail "uninstall left code-reviewer.md"
