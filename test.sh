@@ -106,6 +106,13 @@ const s = require('$SETTINGS');
 const m = (s.hooks.PreToolUse || []).map(e => e.matcher);
 process.exit(m.includes('Write|Edit|MultiEdit|NotebookEdit') ? 0 : 1);
 " && pass "settings.json edit matcher covers MultiEdit/NotebookEdit" || fail "edit matcher does not cover MultiEdit/NotebookEdit"
+
+  # #12: the state-based commit-watchdog must be wired on PostToolUse Bash.
+  node -e "
+const s = require('$SETTINGS');
+const post = (s.hooks.PostToolUse || []).flatMap(e => e.hooks || []).map(h => h.command || '');
+process.exit(post.some(c => c.includes('dispatch.mjs post-bash')) ? 0 : 1);
+" && pass "settings.json wires the PostToolUse commit-watchdog" || fail "PostToolUse commit-watchdog not wired"
 else
   fail "settings.json not created"
 fi
@@ -284,6 +291,39 @@ echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows commit when floor w
 EF_DOCS="$SANDBOX/ef-docs"; mkdir -p "$EF_DOCS"; ( cd "$EF_DOCS" && git init -q && echo hi > README.md )
 OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_DOCS\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows commit in non-code repo" || fail "enforce-floor wrongly blocked non-code repo"
+
+# ── #12: post-bash commit-watchdog — state-based, spelling-proof ──
+EF_POST="$SANDBOX/ef-post"; mkdir -p "$EF_POST"
+( cd "$EF_POST" && git init -q && git config user.email t@e.com && git config user.name T \
+  && echo '{}' > package.json && git add -A && git commit -q -m first )
+post_event() { echo "{\"session_id\":\"posttest\",\"tool_input\":{\"command\":\"anything\"},\"cwd\":\"$EF_POST\"}"; }
+
+# non-git cwd → silent
+OUT=$(echo "{\"session_id\":\"posttest\",\"tool_input\":{\"command\":\"x\"},\"cwd\":\"$SANDBOX\"}" | node "$SANDBOX/.claude/hooks/dispatch.mjs" post-bash 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "watchdog: silent outside a git repo" || fail "watchdog fired outside a git repo"
+
+# first sighting initializes the HEAD cache — no flag
+OUT=$(post_event | node "$SANDBOX/.claude/hooks/dispatch.mjs" post-bash 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "watchdog: first sighting initializes silently" || fail "watchdog flagged on first sighting"
+
+# a fresh commit lands with NO floor wired → flagged, however it was spelled
+( cd "$EF_POST" && echo x > f.txt && git add f.txt && git commit -q -m second )
+OUT=$(post_event | node "$SANDBOX/.claude/hooks/dispatch.mjs" post-bash 2>&1; echo "EXIT:$?")
+if echo "$OUT" | grep -q "EXIT:2" && echo "$OUT" | grep -qi "FLOOR VIOLATION"; then
+  pass "watchdog: flags a fresh commit that landed without a floor (state-based)"
+else
+  fail "watchdog: missed a floorless commit"
+fi
+
+# same state again (HEAD unchanged) → silent, no repeat nagging
+OUT=$(post_event | node "$SANDBOX/.claude/hooks/dispatch.mjs" post-bash 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "watchdog: does not re-flag an unchanged HEAD" || fail "watchdog re-flagged without a new commit"
+
+# floor wired → a fresh commit is silent
+touch "$EF_POST/.git/hooks/pre-commit"; chmod +x "$EF_POST/.git/hooks/pre-commit"
+( cd "$EF_POST" && echo y >> f.txt && git add f.txt && git commit -q -m third )
+OUT=$(post_event | node "$SANDBOX/.claude/hooks/dispatch.mjs" post-bash 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:0" && pass "watchdog: silent when the floor is wired" || fail "watchdog flagged despite a wired floor"
 
 # ============================================================
 # SECTION: verify.sh stack & runner detection
@@ -726,7 +766,9 @@ const checks = [
   [s.permissions && s.permissions.allow && s.permissions.allow[0] === 'Bash(npm test)', 'uninstall preserved custom permission'],
   [s.model === 'haiku', 'uninstall preserved custom model'],
   [s.hooks && s.hooks.PostToolUse && s.hooks.PostToolUse.length > 0, 'uninstall preserved PostToolUse hooks'],
-  [!s.hooks || !s.hooks.PreToolUse || s.hooks.PreToolUse.length === 0, 'uninstall removed all PreToolUse hooks']
+  [!s.hooks || !s.hooks.PreToolUse || s.hooks.PreToolUse.length === 0, 'uninstall removed all PreToolUse hooks'],
+  // #12: our PostToolUse watchdog must be stripped too, custom entries kept.
+  [!JSON.stringify(s.hooks || {}).includes('dispatch.mjs'), 'uninstall removed our hooks from every event']
 ];
 for (const [ok, label] of checks) console.log(ok ? 'PASS:' : 'FAIL:', label);
 " > "$TMPRESULTS2"

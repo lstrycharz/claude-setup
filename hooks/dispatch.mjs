@@ -9,8 +9,9 @@
  * (stripQuotes, stdin parsing, the block/allow protocol) live in one place.
  *
  * Usage (wired by install.sh into ~/.claude/settings.json):
- *   node dispatch.mjs bash   PreToolUse → Bash
- *   node dispatch.mjs edit   PreToolUse → Write|Edit|MultiEdit|NotebookEdit
+ *   node dispatch.mjs bash        PreToolUse  → Bash
+ *   node dispatch.mjs edit        PreToolUse  → Write|Edit|MultiEdit|NotebookEdit
+ *   node dispatch.mjs post-bash   PostToolUse → Bash
  *
  * bash role:
  *   - no-verify guard: blocks hook-bypass attempts (--no-verify, commit's -n
@@ -31,7 +32,15 @@
  *     update PROGRESS.md then /clear (transitioning) or /compact (mid-task).
  *     Emitted as hook JSON output (systemMessage); never blocks.
  *
- * Exit 0 = allow, Exit 2 = block (stderr is fed to the model).
+ * post-bash role (#12 — the spelling-proof floor check):
+ *   - commit-watchdog: after every Bash call, detects (via pure fs reads, no
+ *     process spawn on the happy path) whether HEAD moved to a FRESHLY CREATED
+ *     commit in a code repo whose floor is not wired. The PreToolUse regexes
+ *     can be dodged by spelling (subshells, scripts, encodings) — but the
+ *     commit either exists or it doesn't. Exit 2 here doesn't undo the commit
+ *     (the tool already ran); it feeds the model a remediation instruction.
+ *
+ * Exit 0 = allow, Exit 2 = block / feed remediation to the model (stderr).
  * Any internal error → allow: never block on our own bug.
  */
 
@@ -39,8 +48,9 @@ import {
   accessSync, constants, existsSync, readFileSync, writeFileSync,
   mkdirSync, readdirSync, statSync, unlinkSync,
 } from 'node:fs';
-import { basename, join, resolve, isAbsolute } from 'node:path';
+import { basename, dirname, join, resolve, isAbsolute } from 'node:path';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 // Replace single/double-quoted segments so flags/commands inside string
 // literals don't match (W7).
@@ -216,17 +226,112 @@ function suggestCompact(input) {
   return null;
 }
 
+// ── post-bash role: commit-watchdog (#12) ───────────────────────────────────
+// State-based and spelling-proof: instead of parsing the command, observe
+// whether HEAD moved. Pure fs reads per call (walk up to .git, resolve HEAD);
+// git is spawned only on the rare suspicious path (HEAD actually moved in a
+// code repo).
+
+const FRESH_COMMIT_WINDOW_S = 300; // older HEAD movement = checkout/branch switch, not a new commit
+
+function findGitDir(startDir) {
+  let dir = resolve(startDir);
+  for (;;) {
+    const dotGit = join(dir, '.git');
+    try {
+      const st = statSync(dotGit);
+      if (st.isDirectory()) return { repoRoot: dir, gitDir: dotGit };
+      // Worktree/submodule: .git is a file containing "gitdir: <path>".
+      const m = /^gitdir:\s*(.+)\s*$/.exec(readFileSync(dotGit, 'utf8'));
+      if (m) return { repoRoot: dir, gitDir: resolve(dir, m[1].trim()) };
+      return null;
+    } catch { /* not here — keep walking up */ }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function resolveHead(gitDir) {
+  try {
+    const head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim();
+    const m = /^ref:\s*(.+)$/.exec(head);
+    if (!m) return head; // detached HEAD: the sha itself
+    const ref = m[1].trim();
+    try {
+      return readFileSync(join(gitDir, ref), 'utf8').trim();
+    } catch {
+      const packed = readFileSync(join(gitDir, 'packed-refs'), 'utf8');
+      for (const line of packed.split('\n')) {
+        if (line.endsWith(' ' + ref)) return line.slice(0, 40);
+      }
+      return null;
+    }
+  } catch { return null; }
+}
+
+function checkCommitWithoutFloor(input) {
+  const cwd = input?.cwd || process.cwd();
+  const found = findGitDir(cwd);
+  if (!found) return null;
+  const { repoRoot, gitDir } = found;
+  if (!MANIFESTS.some((m) => existsSync(join(repoRoot, m)))) return null;
+
+  const sha = resolveHead(gitDir);
+  if (!sha) return null;
+
+  let sessionId = String(input?.session_id || process.env.CLAUDE_SESSION_ID || 'default')
+    .replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
+  const repoKey = createHash('sha256').update(repoRoot).digest('hex').slice(0, 16);
+  const cacheFile = join(METRICS_DIR, `.head-${sessionId}-${repoKey}`);
+
+  let prev = null;
+  try { prev = readFileSync(cacheFile, 'utf8').trim(); } catch { /* first sighting */ }
+  try { mkdirSync(METRICS_DIR, { recursive: true }); writeFileSync(cacheFile, sha); } catch { /* ignore */ }
+  if (!prev || prev === sha) return null; // first sighting, or HEAD didn't move
+
+  // HEAD moved during this session. Only flag when the floor is unwired…
+  let hooksDir;
+  try {
+    hooksDir = execSync('git rev-parse --git-path hooks', { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim();
+  } catch { return null; }
+  const absHooksDir = isAbsolute(hooksDir) ? hooksDir : resolve(cwd, hooksDir);
+  try { accessSync(join(absHooksDir, 'pre-commit'), constants.X_OK); return null; } catch { /* unwired */ }
+
+  // …and the new HEAD is a freshly CREATED commit (a checkout/branch switch
+  // moves HEAD to old commits — that's not a floor violation).
+  let committedAt = 0;
+  try {
+    committedAt = parseInt(
+      execSync('git log -1 --format=%ct', { cwd, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(),
+      10,
+    );
+  } catch { return null; }
+  if (!Number.isFinite(committedAt) || Date.now() / 1000 - committedAt > FRESH_COMMIT_WINDOW_S) return null;
+
+  return (
+    'FLOOR VIOLATION: a commit was just created in ' + repoRoot + ' but no EXECUTABLE ' +
+    'pre-commit hook is wired, so it ran no lint/typecheck gate. This check is state-based — ' +
+    'how the command was spelled does not matter.\n' +
+    'Remediate NOW: (1) run `bash .claude/verify.sh` and fix any failures; ' +
+    '(2) wire the floor (init-claude, or chmod +x the pre-commit hook); ' +
+    '(3) amend the commit if fixes were needed.\n'
+  );
+}
+
 // ── dispatch ────────────────────────────────────────────────────────────────
 
 const ROLES = {
   bash: { blockers: [checkNoVerify, checkFloor], advisory: [] },
   edit: { blockers: [checkConfigProtection], advisory: [suggestCompact] },
+  'post-bash': { blockers: [checkCommitWithoutFloor], advisory: [] },
 };
 
 const role = ROLES[process.argv[2]];
 if (!role) {
   // Misconfigured wiring must be visible, but must not block the agent.
-  process.stderr.write(`dispatch.mjs: unknown role '${process.argv[2]}' (expected bash|edit)\n`);
+  process.stderr.write(`dispatch.mjs: unknown role '${process.argv[2]}' (expected bash|edit|post-bash)\n`);
   process.exit(0);
 }
 
