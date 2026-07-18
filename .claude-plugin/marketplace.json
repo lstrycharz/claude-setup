@@ -1,0 +1,13 @@
+{
+  "name": "claude-setup",
+  "owner": {
+    "name": "Lukasz Strycharz"
+  },
+  "plugins": [
+    {
+      "name": "claude-setup",
+      "source": "./",
+      "description": "Guardrail hooks, review commands/agents, and the deterministic floor scaffolder."
+    }
+  ]
+}

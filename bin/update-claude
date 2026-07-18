@@ -5,8 +5,9 @@
 # This is the other half: it refreshes the infrastructure files in place while
 # never clobbering the files you customize.
 #
-# Reads from ~/.claude-template — keep it current by re-running ./install.sh from
-# the claude-setup repo before you update your projects.
+# Reads the template from INSIDE the plugin/repo (script-relative), so updating
+# the plugin updates what this installs — no separate copy to drift (#13).
+# ~/.claude-template is a legacy fallback for pre-plugin installs.
 #
 # Updates (overwrites — these are infrastructure, not meant to be hand-edited):
 #   .claude/bin/        the cross-vendor reviewer (review-diff.mjs)
@@ -20,11 +21,16 @@
 #
 # Never touches: CLAUDE.md, CLAUDE.local.md, PROGRESS.md, settings*.json, your code.
 
-TEMPLATE="$HOME/.claude-template"
-
-if [ ! -d "$TEMPLATE" ]; then
-  echo "❌ Template not found at $TEMPLATE"
-  echo "   Run ./install.sh from the claude-setup repo first."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "$CLAUDE_PLUGIN_ROOT/template" ]; then
+  TEMPLATE="$CLAUDE_PLUGIN_ROOT/template"
+elif [ -d "$SCRIPT_DIR/../template" ]; then
+  TEMPLATE="$(cd "$SCRIPT_DIR/../template" && pwd)"
+elif [ -d "$HOME/.claude-template" ]; then
+  TEMPLATE="$HOME/.claude-template"   # legacy pre-plugin install
+else
+  echo "❌ Template not found (looked in the plugin root, next to this script, and ~/.claude-template)."
+  echo "   Install the claude-setup plugin, or run this script from a repo checkout."
   exit 1
 fi
 

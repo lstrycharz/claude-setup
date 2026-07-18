@@ -95,23 +95,41 @@ When you start a new project, one command sets up:
 
 ## Getting Started
 
-### Step 1: Install (once per computer)
+### Step 1: Install the plugin (once per computer)
+
+Inside Claude Code:
+
+```
+/plugin marketplace add lstrycharz/claude-setup
+/plugin install claude-setup@claude-setup
+```
+
+That gives you the hooks, the slash commands (`/code-review`, `/init-floor`, …),
+the agents, and the project template — versioned, updatable, and removable as
+one unit, without ever touching your `settings.json`.
+
+Then install the global rules (the one part plugins don't cover — they're
+auto-loaded from `~/.claude/rules` into every session):
 
 ```bash
 git clone https://github.com/lstrycharz/claude-setup.git
 cd claude-setup
-./install.sh
+./install.sh       # copies global rules + playbooks; checks Node + gitleaks
 ```
 
-This puts everything in the right place. It'll also ask if you want to install `gitleaks` (the secret scanner) — say yes.
+**Upgrading from the old copied install?** Run `./uninstall.sh` once — it
+removes the old copied hooks/commands/agents and strips their wiring from
+`settings.json` (your own settings are preserved).
 
 ### Step 2: Set up a new project
 
-```bash
-cd my-project
-git init           # if it's not already a git repo
-init-claude        # sets up .claude/, .gitignore, and the pre-commit hook
+In Claude Code, from the project directory:
+
 ```
+/init-floor        # sets up .claude/, .gitignore, and the git hooks
+```
+
+(Or from a repo checkout: `cd my-project && /path/to/claude-setup/bin/init-claude`.)
 
 ### Step 3: Start working
 
@@ -230,24 +248,24 @@ model on them.
 
 ## Updating
 
-When you make changes to this repo:
+**The plugin** (hooks, commands, agents, template): bump `version` in
+`.claude-plugin/plugin.json`, push to GitHub — every machine picks it up
+through the plugin system (`/plugin` → update). No per-machine script runs.
 
-```bash
-cd claude-setup
-git pull
-./install.sh
-```
+**The global rules**: after changing `global-rules/`, re-run `./install.sh`
+on each machine (it only copies rules + playbooks now — it never touches
+`settings.json`).
 
-That's it. The install script copies everything to the right places.
-
-**Safe to re-run anytime.** The installer merges instead of overwrites — your personal permissions, custom hooks, and other settings in `~/.claude/settings.json` are preserved. It only updates the hooks this repo manages.
+**Your projects**: run `/update-floor` in a project to refresh its `.claude/`
+infrastructure (reviewer, CI templates, configs) from the current plugin —
+your customized `verify.sh`, `CLAUDE.md`, and settings are never clobbered.
 
 ## Testing
 
 Before sharing this with teammates, verify it works cleanly:
 
 ```bash
-./test.sh          # 114 assertions in a sandboxed ~/ (30 sec)
+./test.sh          # the full suite in a sandboxed ~/ (30 sec)
 ./docker-test.sh   # full install on a clean Ubuntu container (2 min, requires Docker)
 ```
 
@@ -255,16 +273,24 @@ See [TESTING.md](./TESTING.md) for a manual scenario checklist covering edge cas
 
 ## Uninstalling
 
+**The plugin**: `/plugin uninstall claude-setup` inside Claude Code — removes
+hooks, commands, and agents cleanly.
+
+**The global rules (and any legacy pre-plugin install)**:
+
 ```bash
 ./uninstall.sh
 ```
 
 Safely removes only what this repo installed:
-- Our hooks, commands, agents, and rules — your custom ones stay
-- Our entries from `~/.claude/settings.json` — your permissions, model, env, and other hooks are preserved
-- `~/bin/init-claude`
+- Our rules and playbooks — your custom ones stay
+- Legacy copied hooks/commands/agents from the old install.sh era, plus their
+  entries in `~/.claude/settings.json` — your permissions, model, env, and
+  other hooks are preserved
+- Legacy `~/bin/init-claude` / `~/bin/update-claude`
 
-It does **not** touch per-project `.claude/` directories or pre-commit hooks already installed in specific repos — remove those manually where needed.
+It does **not** touch per-project `.claude/` directories or git hooks already
+installed in specific repos — remove those manually where needed.
 
 ## The Rules at a Glance
 
