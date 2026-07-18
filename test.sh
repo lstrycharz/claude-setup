@@ -59,6 +59,7 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md" ] && pass "playbooks/AGENT_PROJECT_PLAYBOOK.md installed" || fail "playbooks/AGENT_PROJECT_PLAYBOOK.md missing"
 [ -f "$SANDBOX/.claude/hooks/dispatch.mjs" ] && pass "hooks/dispatch.mjs installed" || fail "hooks/dispatch.mjs missing"
 [ -f "$SANDBOX/.claude-template/verify.sh" ] && pass "template/verify.sh installed" || fail "template/verify.sh missing"
+[ -f "$SANDBOX/.claude-template/.pre-push-hook" ] && pass "template/.pre-push-hook installed" || fail "template/.pre-push-hook missing"
 [ -f "$SANDBOX/.claude-template/ci/github-actions.yml" ] && pass "template/ci installed" || fail "template/ci missing"
 [ -f "$SANDBOX/.claude-template/configs/eslint.config.mjs.tpl" ] && pass "template/configs installed" || fail "template/configs missing"
 [ -f "$SANDBOX/.claude-template/bin/review-diff.mjs" ] && pass "template/bin/review-diff.mjs installed" || fail "template/bin/review-diff.mjs missing"
@@ -305,8 +306,8 @@ EOF
   chmod +x "$SHIMDIR/$1"
 }
 reset_shims() { rm -rf "$SHIMDIR"; mkdir -p "$SHIMDIR"; : > "$SHIMLOG"; }
-run_verify() { # $1=repo dir, $2=VERIFY_ROOTS (optional)
-  ( cd "$1" && PATH="$SHIMDIR:$PATH" VERIFY_ROOTS="${2:-.}" bash "$VERIFY" >/dev/null 2>&1 )
+run_verify() { # $1=repo dir, $2=VERIFY_ROOTS (optional), $3=extra flag (e.g. --quick)
+  ( cd "$1" && PATH="$SHIMDIR:$PATH" VERIFY_ROOTS="${2:-.}" bash "$VERIFY" ${3:-} >/dev/null 2>&1 )
 }
 
 # --- Node: pnpm-lock.yaml → pnpm, not npm ---
@@ -370,6 +371,22 @@ run_verify "$R"; rc=$?
 mkdir -p "$R/.claude"; touch "$R/.claude/verify.allow-no-tests"   # deliberate, visible opt-out
 run_verify "$R"; rc=$?
 [ "$rc" -eq 0 ] && pass "verify: .claude/verify.allow-no-tests opts out of the hard-fail" || fail "verify: opt-out marker did not pass"
+
+# --- #14: --quick runs lint/typecheck but NOT tests (the push/CI tier's job) ---
+reset_shims; mkshim npm
+R="$SANDBOX/v-quick"; mkdir -p "$R"
+printf '{ "scripts": { "lint": "x", "test": "x" } }\n' > "$R/package.json"
+run_verify "$R" "." "--quick"
+grep -q '^npm run lint' "$SHIMLOG" && pass "verify --quick: runs lint" || fail "verify --quick: did not run lint"
+grep -q '^npm run test' "$SHIMLOG" && fail "verify --quick: ran tests (they belong to the push tier)" || pass "verify --quick: skips tests"
+# quick passes a repo with NO test script — the full tier still hard-fails it
+reset_shims; mkshim npm
+R="$SANDBOX/v-quick-notest"; mkdir -p "$R"
+printf '{ "scripts": { "lint": "x" } }\n' > "$R/package.json"
+run_verify "$R" "." "--quick"; rc=$?
+[ "$rc" -eq 0 ] && pass "verify --quick: no-test repo passes quick tier" || fail "verify --quick: blocked a no-test repo at commit time"
+run_verify "$R"; rc=$?
+[ "$rc" -ne 0 ] && pass "verify (full): no-test repo still hard-fails" || fail "verify (full): no-test repo passed"
 
 # --- #7: a manifest verify.sh can't verify must NOT false-green the floor ---
 reset_shims
@@ -546,10 +563,12 @@ git config user.name Test
 [ -f "$PROJECT/.claude/CLAUDE.md" ] && pass "init-claude copies CLAUDE.md" || fail "init-claude did not copy CLAUDE.md"
 [ -f "$PROJECT/.gitignore" ] && pass "init-claude creates .gitignore when missing" || fail "init-claude did not create .gitignore"
 [ -x "$PROJECT/.git/hooks/pre-commit" ] && pass "init-claude installs pre-commit hook" || fail "init-claude did not install pre-commit hook"
+[ -x "$PROJECT/.git/hooks/pre-push" ] && pass "init-claude installs pre-push hook (full floor)" || fail "init-claude did not install pre-push hook"
 
 # .project-gitignore should NOT be in .claude/
 [ -f "$PROJECT/.claude/.project-gitignore" ] && fail ".project-gitignore leaked into .claude/" || pass ".project-gitignore cleaned up from .claude/"
 [ -f "$PROJECT/.claude/.pre-commit-hook" ] && fail ".pre-commit-hook leaked into .claude/" || pass ".pre-commit-hook cleaned up from .claude/"
+[ -f "$PROJECT/.claude/.pre-push-hook" ] && fail ".pre-push-hook leaked into .claude/" || pass ".pre-push-hook cleaned up from .claude/"
 
 # ============================================================
 # SECTION: init-claude respects existing .gitignore

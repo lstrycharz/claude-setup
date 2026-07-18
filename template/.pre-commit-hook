@@ -1,6 +1,7 @@
 #!/bin/bash
 # Pre-commit hook: (1) scan staged changes for secrets (gitleaks),
-#                  (2) run the deterministic floor (.claude/verify.sh).
+#                  (2) run the QUICK floor (lint + typecheck) on the STAGED SNAPSHOT.
+# Tests run at pre-push and CI (the full tier) — see .claude/verify.sh (#14).
 # Installed by init-claude.
 
 # ── 1. Secret scan ────────────────────────────────────────────────────────────
@@ -19,14 +20,27 @@ else
   fi
 fi
 
-# ── 2. Deterministic floor: lint + typecheck + test ─────────────────────────────
-# One source of truth, shared with the enforce-floor hook and CI.
+# ── 2. Quick floor on the STAGED SNAPSHOT (lint + typecheck) ─────────────────
+# A commit records the INDEX, not the working tree. With partial staging the
+# two differ, so verifying the worktree passes staged-broken code (the fix is
+# unstaged) and blocks staged-good code (unrelated dirty files). Check out the
+# index into a temp dir and verify THAT (#14). One source of truth, shared
+# with the pre-push hook and CI: .claude/verify.sh.
 if [ -f ".claude/verify.sh" ]; then
-  bash .claude/verify.sh
+  REPO_ROOT="$PWD"
+  TMP=$(mktemp -d) || exit 1
+  trap 'rm -rf "$TMP"' EXIT
+  git checkout-index --prefix="$TMP/" -a
+  # Heavy dependency dirs aren't in the index — link them so tools resolve.
+  for d in node_modules .venv venv; do
+    [ -e "$REPO_ROOT/$d" ] && ln -s "$REPO_ROOT/$d" "$TMP/$d"
+  done
+  ( cd "$TMP" && bash "$REPO_ROOT/.claude/verify.sh" --quick )
   if [ $? -ne 0 ]; then
     echo ""
-    echo "❌ verify.sh failed — commit blocked. Fix lint/types/tests; don't bypass."
-    echo "   (Do NOT use --no-verify; it's blocked for the agent and defeats the gate.)"
+    echo "❌ quick floor failed on the staged snapshot — commit blocked."
+    echo "   Fix lint/typecheck in the STAGED files; don't bypass."
+    echo "   (Tests run at push time — this gate is lint + typecheck only.)"
     exit 1
   fi
 fi

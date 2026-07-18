@@ -21,12 +21,21 @@
 #   - A code stack with NO test runner is a hard failure (not just a warning) —
 #     accept the gap deliberately with a marker file:  .claude/verify.allow-no-tests
 #
+# Two tiers, one script (#14) — so the tiers can never drift apart:
+#   verify.sh --quick   lint + typecheck only. Run by the pre-commit hook on the
+#                       STAGED SNAPSHOT, so granular save-point commits stay fast.
+#   verify.sh           the full floor (lint + typecheck + TESTS). Run by the
+#                       pre-push hook and CI — the merge gate is always full.
+#
 # Exit 0 = green (safe). Non-zero = blocked. init-claude auto-detects your stack;
 # edit freely for your project.
 
 set -uo pipefail
 fail=0
 step() { echo ""; echo "→ $*"; }
+
+MODE=full
+[ "${1:-}" = "--quick" ] && MODE=quick
 
 # Directories to verify. Default: repo root. Space-separated; opt-in for monorepos.
 # NOTE: space-separated, so an individual path containing a space is unsupported
@@ -76,6 +85,8 @@ verify_node() {
   step "node ($pm)"
   has_script lint      && { step "lint";      $pm run lint      || fail=1; }
   has_script typecheck && { step "typecheck"; $pm run typecheck || fail=1; }
+  # Tests belong to the full tier (pre-push / CI); quick = commit-time speed.
+  [ "$MODE" = "quick" ] && return
   if has_script test; then
     step "test"; $pm run test || fail=1
   else
@@ -99,12 +110,16 @@ verify_python() {
     step "python ($run)"
     step "ruff";   $run ruff check . || fail=1
     step "mypy";   $run mypy .       || fail=1
-    step "pytest"; $run pytest -q    || fail=1
+    if [ "$MODE" != "quick" ]; then
+      step "pytest"; $run pytest -q    || fail=1
+    fi
   else
     # No uv/poetry lockfile — fall back to host tools, but never go silently green.
     if command -v ruff   >/dev/null 2>&1; then step "ruff";   ruff check . || fail=1; fi
     if command -v mypy   >/dev/null 2>&1; then step "mypy";   mypy . || fail=1; fi
-    if command -v pytest >/dev/null 2>&1; then step "pytest"; pytest -q || fail=1
+    if [ "$MODE" = "quick" ]; then
+      : # tests belong to the full tier
+    elif command -v pytest >/dev/null 2>&1; then step "pytest"; pytest -q || fail=1
     else
       echo ""
       echo "⚠️  no uv/poetry lockfile and pytest not on PATH — Python project has no test floor (see qa.md)."

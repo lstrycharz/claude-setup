@@ -58,6 +58,7 @@ cp "$SCRIPT_DIR/template/settings.local.json" ~/.claude-template/
 cp "$SCRIPT_DIR/template/dot-gitignore" ~/.claude-template/.gitignore
 cp "$SCRIPT_DIR/template/.project-gitignore" ~/.claude-template/
 cp "$SCRIPT_DIR/template/.pre-commit-hook" ~/.claude-template/
+cp "$SCRIPT_DIR/template/.pre-push-hook" ~/.claude-template/
 cp "$SCRIPT_DIR/template/verify.sh" ~/.claude-template/
 mkdir -p ~/.claude-template/ci ~/.claude-template/configs ~/.claude-template/bin ~/.claude-template/review
 cp "$SCRIPT_DIR/template/ci/"* ~/.claude-template/ci/

@@ -1,0 +1,15 @@
+#!/bin/bash
+# Pre-push hook: run the FULL deterministic floor (lint + typecheck + TESTS).
+# Commit time runs the quick tier on the staged snapshot; the expensive test
+# suite gates the PUSH instead, so granular save-point commits stay fast while
+# nothing unverified leaves the machine (#14). CI runs the same full floor as
+# the merge gate. Installed by init-claude.
+
+if [ -f ".claude/verify.sh" ]; then
+  bash .claude/verify.sh
+  if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ verify.sh failed — push blocked. Fix lint/types/tests; don't bypass."
+    exit 1
+  fi
+fi
