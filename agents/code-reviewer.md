@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews uncommitted code changes for bugs, security issues, performance problems, and style violations. Returns findings by severity with concrete fix suggestions.
-model: sonnet
+model: claude-sonnet-5
 tools: Read, Bash, Grep, Glob
 ---
 
