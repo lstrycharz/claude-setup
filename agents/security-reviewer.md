@@ -1,7 +1,7 @@
 ---
 name: security-reviewer
 description: Scans codebase for security vulnerabilities following OWASP Top 10, secrets detection, SSRF risks, and dependency audit. Returns findings with severity and remediation.
-model: claude-sonnet-5
+model: claude-fable-5
 tools: Read, Bash, Grep, Glob
 ---
 
