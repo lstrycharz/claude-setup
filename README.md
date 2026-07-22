@@ -140,13 +140,26 @@ never ran the old install needs no cleanup: just Step 1.
 
 ### Step 2: Set up a new project
 
-In Claude Code, from the project directory:
+First, in your **terminal**, make the folder a git repo and lay down your stack
+skeleton. Both matter: the floor's gates live in git hooks (no git repo → the
+hooks are **silently skipped**), and `/init-floor` reads your stack to drop the
+right starter configs and to check you actually have a test runner:
+
+```bash
+cd ~/Desktop/MyProject
+git init                       # REQUIRED — without it, no commit/push gates get installed
+uv init                        # or: npm init -y   — create your stack's manifest first
+```
+
+Then, **inside a Claude Code session** (`/init-floor` is a slash command you type
+in Claude Code — not a terminal command):
 
 ```
-/init-floor        # sets up .claude/, .gitignore, and the git hooks
+/init-floor        # scaffolds .claude/, .gitignore, and the pre-commit + pre-push hooks
 ```
 
-(Or from a repo checkout: `cd my-project && /path/to/claude-setup/bin/init-claude`.)
+(Prefer the terminal? The same scaffolder is `bin/init-claude` in the plugin —
+`/init-floor` just runs it for you.)
 
 ### Step 3: Start working
 
