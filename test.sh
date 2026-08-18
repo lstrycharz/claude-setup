@@ -562,8 +562,12 @@ cd "$PYUV"
 git init > /dev/null 2>&1
 git config user.email test@example.com
 git config user.name Test
-printf '[project]\nname = "x"\n' > pyproject.toml
+printf '[project]\nname = "x"\nrequires-python = ">=3.12"\n' > pyproject.toml
 touch uv.lock
+# A "well-configured" project means one that HAS TESTS. The fixture previously
+# asserted that on uv.lock alone, which is what let the detection bug through:
+# uv.lock proves a lockfile exists, never that a single test does.
+mkdir -p tests && printf 'def test_real():\n    assert True\n' > tests/test_real.py
 # Shim uv on PATH (pytest deliberately NOT present — it lives in uv's env).
 mkdir -p "$SANDBOX/initshims"
 printf '#!/bin/bash\nexit 0\n' > "$SANDBOX/initshims/uv"; chmod +x "$SANDBOX/initshims/uv"
@@ -571,9 +575,41 @@ printf '#!/bin/bash\nexit 0\n' > "$SANDBOX/initshims/uv"; chmod +x "$SANDBOX/ini
 # lives (/usr/local/bin, /opt/homebrew/bin) — otherwise host pytest masks the bug.
 PATH="$SANDBOX/initshims:/usr/bin:/bin" "$SCRIPT_DIR/bin/init-claude" > "$LOGS"/init-uv.log 2>&1
 if [ -f "$PYUV/.claude/PROGRESS.md" ] && grep -qi "test floor gap" "$PYUV/.claude/PROGRESS.md"; then
-  fail "init-claude false-flags a uv project (uv.lock + uv) as a missing test floor"
+  fail "init-claude false-flags a uv project that has tests as a missing test floor"
 else
-  pass "init-claude recognizes uv.lock as a Python test floor"
+  pass "init-claude recognizes a uv project with tests as a Python test floor"
+fi
+
+# ruff.toml target-version must follow the project, not the template default.
+if grep -q 'target-version = "py312"' "$PYUV/ruff.toml" 2>/dev/null; then
+  pass "init-claude pins ruff target-version from requires-python"
+else
+  fail "init-claude left the template ruff target-version (got: $(grep -m1 target-version "$PYUV/ruff.toml" 2>/dev/null))"
+fi
+cd "$SANDBOX"
+
+# ── Regression: a Python project with NO tests must be flagged, even when a
+# pytest binary happens to exist on PATH. `uv init` creates no uv.lock, so this
+# fell through to `command -v pytest` and a global pytest silently passed it.
+PYNOTESTS="$SANDBOX/py-no-tests"
+mkdir -p "$PYNOTESTS"
+cd "$PYNOTESTS"
+git init > /dev/null 2>&1
+git config user.email test@example.com
+git config user.name Test
+printf '[project]\nname = "x"\nrequires-python = ">=3.12"\n' > pyproject.toml
+# Put a pytest shim ON PATH — the machine has pytest, the project has no tests.
+printf '#!/bin/bash\nexit 0\n' > "$SANDBOX/initshims/pytest"; chmod +x "$SANDBOX/initshims/pytest"
+PATH="$SANDBOX/initshims:/usr/bin:/bin" "$SCRIPT_DIR/bin/init-claude" > "$LOGS"/init-py-no-tests.log 2>&1
+if grep -qi "test floor gap" "$PYNOTESTS/.claude/PROGRESS.md" 2>/dev/null; then
+  pass "init-claude flags a Python project with no tests despite pytest on PATH"
+else
+  fail "init-claude missed a missing test floor because pytest was on PATH"
+fi
+if grep -qi "TEST FLOOR GAP" "$LOGS"/init-py-no-tests.log; then
+  pass "init-claude prints the test floor gap to the console"
+else
+  fail "init-claude stayed silent about a missing test floor"
 fi
 cd "$SANDBOX"
 
