@@ -59,10 +59,34 @@ echo "✅ .claude/verify.sh installed (the floor: lint + typecheck + test)"
 
 # ── Tier 4: drop stack starter configs at the project root (never overwrite) ──
 drop() { # drop <template-under-.claude/configs> <target-at-root>
+  # Returns 0 ONLY when it created the file, so callers can post-process a
+  # freshly dropped starter config without ever touching a user's own.
   if [ -f ".claude/configs/$1" ] && [ ! -e "$2" ]; then
     cp ".claude/configs/$1" "$2"
     echo "✅ $2 added (starter config — edit per project)"
+    return 0
   fi
+  return 1
+}
+
+# Align the starter ruff.toml with the Python this project actually targets.
+# The template ships a fixed target-version, so without this every project got
+# it regardless of .python-version / requires-python, and ruff's pyupgrade (UP)
+# rules silently applied the wrong baseline.
+ruff_pin_target_version() {
+  local v="" src=""
+  if [ -f .python-version ]; then
+    v=$(grep -oE '3\.[0-9]+' .python-version | head -1); src=".python-version"
+  fi
+  if [ -z "$v" ] && [ -f pyproject.toml ]; then
+    v=$(grep -m1 -E '^[[:space:]]*requires-python' pyproject.toml | grep -oE '3\.[0-9]+' | head -1)
+    src="requires-python"
+  fi
+  [ -n "$v" ] || return 0   # nothing to go on — keep the template default
+  local tv="py${v%.*}${v#*.}"
+  sed -i.bak -E "s/^target-version = \".*\"/target-version = \"$tv\"/" ruff.toml 2>/dev/null \
+    && rm -f ruff.toml.bak \
+    && echo "   ↳ ruff target-version set to $tv (from $src)"
 }
 FLOOR_GAP=""
 if [ -f "package.json" ]; then
@@ -75,14 +99,21 @@ if [ -f "package.json" ]; then
   fi
 fi
 if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || ls ./*.py >/dev/null 2>&1; then
-  drop "ruff.toml.tpl" "ruff.toml"
-  # A uv/poetry project reaches pytest through its env, not bare PATH — mirror
-  # verify.sh's runner detection so a well-configured project isn't false-flagged.
-  if [ -f "uv.lock" ] && command -v uv >/dev/null 2>&1; then :
-  elif [ -f "poetry.lock" ] && command -v poetry >/dev/null 2>&1; then :
-  elif command -v pytest >/dev/null 2>&1; then :
-  else
-    FLOOR_GAP="no uv/poetry lockfile and pytest not found — this Python project ships with NO test floor."
+  drop "ruff.toml.tpl" "ruff.toml" && ruff_pin_target_version
+  # ── Tier 2: floor check — does this project actually HAVE tests? ──
+  # A runner on $PATH proves nothing about THIS project. `uv init` does not
+  # create uv.lock (it appears on the first `uv add`/`uv sync`), so a fresh uv
+  # project fell through to `command -v pytest` and any globally-installed
+  # pytest silently satisfied the check — reporting a test floor that did not
+  # exist. That is the precise false-green verify.sh's own header warns about.
+  #
+  # Look for test FILES: the one signal that is about the project rather than
+  # the machine. Deliberately a pure filesystem check — a `pytest --collect-only`
+  # probe would be more precise but executes conftest.py, and init-claude must
+  # stay a scaffolder that never runs project code.
+  if ! find . \( -name .venv -o -name venv -o -name node_modules -o -name .git \) -prune \
+       -o \( -name 'test_*.py' -o -name '*_test.py' \) -print 2>/dev/null | grep -q .; then
+    FLOOR_GAP="no test files (test_*.py / *_test.py) found — this Python project ships with NO test floor."
   fi
 fi
 
