@@ -63,6 +63,13 @@ section "Fresh install"
 [ -f "$SCRIPT_DIR/hooks/dispatch.mjs" ] && pass "plugin ships hooks/dispatch.mjs" || fail "hooks/dispatch.mjs missing from plugin"
 [ -f "$SCRIPT_DIR/commands/init-floor.md" ] && pass "plugin ships /init-floor command" || fail "commands/init-floor.md missing"
 [ -f "$SCRIPT_DIR/commands/update-floor.md" ] && pass "plugin ships /update-floor command" || fail "commands/update-floor.md missing"
+# #13: agents ship inside the plugin. A command pointing at ~/.claude/agents/
+# sends the model to a path that only exists on a legacy copied install.
+if grep -rq '~/.claude/agents/' "$SCRIPT_DIR/commands/"; then
+  fail "a command still points at ~/.claude/agents/ (legacy pre-plugin path)"
+else
+  pass "no command points at the legacy ~/.claude/agents/ path"
+fi
 [ -f "$SCRIPT_DIR/template/verify.sh" ] && pass "template/verify.sh installed" || fail "template/verify.sh missing"
 [ -f "$SCRIPT_DIR/template/.pre-push-hook" ] && pass "template/.pre-push-hook installed" || fail "template/.pre-push-hook missing"
 [ -f "$SCRIPT_DIR/template/ci/github-actions.yml" ] && pass "template/ci installed" || fail "template/ci missing"
@@ -187,6 +194,15 @@ echo "$OUT" | grep -q "EXIT:0" && pass "enforce-floor allows non-commit git" || 
 EF_REPO="$SANDBOX/ef-nofloor"; mkdir -p "$EF_REPO"; ( cd "$EF_REPO" && git init -q && echo '{}' > package.json )
 OUT=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "enforce-floor blocks commit when no floor wired" || fail "enforce-floor did NOT block missing floor"
+# The block message is the ONLY remediation the agent gets — it must name the
+# route that exists today (/init-floor), not the pre-plugin one (a bare
+# `init-claude` on PATH, and an opt-out via ~/.claude/settings.json that no
+# longer holds our wiring since #13).
+# Capture STDERR specifically — that is where the remediation text goes (the
+# $OUT captures above discard it, so asserting on them would pass vacuously).
+EF_MSG=$(echo "{\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$EF_REPO\"}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" bash 2>&1 >/dev/null)
+echo "$EF_MSG" | grep -q '/init-floor' && pass "enforce-floor block message points at /init-floor" || fail "enforce-floor block message does not mention /init-floor"
+echo "$EF_MSG" | grep -q 'settings.json' && fail "enforce-floor block message still points at ~/.claude/settings.json (plugin owns the wiring)" || pass "enforce-floor block message no longer points at settings.json"
 
 # enforce-floor: "git commit" inside an echo/string is NOT a real commit (W7)
 OUT=$(echo "{\"tool_input\":{\"command\":\"echo 'see git commit docs'\"},\"cwd\":\"$EF_REPO\"}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" bash 2>/dev/null; echo "EXIT:$?")

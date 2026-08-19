@@ -125,9 +125,10 @@ function checkFloor(input) {
   return (
     'BLOCKED: no deterministic floor in this repo — no EXECUTABLE pre-commit hook in the ' +
     'active hooks dir (' + absHooksDir + '), so commits run no lint/typecheck/test gate.\n' +
-    'Install the floor before committing:  init-claude  (scaffolds verify.sh + the pre-commit hook).\n' +
+    'Install the floor before committing:  /init-floor  (scaffolds verify.sh + the pre-commit hook; ' +
+    'from a terminal: bash "$CLAUDE_PLUGIN_ROOT/bin/init-claude").\n' +
     'If the file exists but is not executable: chmod +x it. If core.hooksPath points elsewhere, wire the hook there.\n' +
-    'If this repo genuinely needs no floor, remove the claude-setup Bash hook from ~/.claude/settings.json.\n'
+    'If this repo genuinely needs no floor, disable or uninstall the claude-setup plugin (/plugin).\n'
   );
 }
 
