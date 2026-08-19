@@ -2,4 +2,4 @@ Run a thorough code review on all uncommitted changes in the current repository.
 
 The agent gathers uncommitted changes (`git diff`, `git diff --cached`), analyzes each change against the full review checklist (bugs, security, performance, type safety, error handling, style, test coverage), and returns findings by severity (CRITICAL / WARNING / SUGGESTION) with file:line references and concrete fixes. The review ends with a verdict: **Ship it** / **Needs fixes** / **Needs rework**, plus the top 3 priority items if fixes are needed.
 
-Full checklist and severity definitions: `~/.claude/agents/code-reviewer.md`
+Full checklist and severity definitions live in the agent's own definition (`${CLAUDE_PLUGIN_ROOT}/agents/code-reviewer.md`), which Claude Code loads as its system prompt when the agent runs — you do not need to read it yourself.
