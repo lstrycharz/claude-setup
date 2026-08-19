@@ -41,6 +41,8 @@ The `enforce-floor` guards back these up: a pre-command check blocks `git commit
 
 `/init-floor` auto-detects your stack, drops starter ESLint / TS / Prettier / ruff configs, and **loudly flags a missing test framework** (writing it into `PROGRESS.md`) instead of letting untested code ship silently. The rule: gates the machine enforces, not instructions a human has to remember.
 
+That test-floor check is about *your project*, never about your machine: for Python it looks for actual test files (`test_*.py` / `*_test.py`) rather than a `pytest` on `$PATH` — a globally installed runner used to satisfy the check in a project that had no tests at all. The starter `ruff.toml` is likewise pinned to the Python you actually target (read from `.python-version` or `requires-python`), so ruff's upgrade rules don't apply the wrong baseline.
+
 `verify.sh` picks the Node manager from the lockfile (pnpm / yarn / bun / npm) and runs Python tools through the project env (`uv run` / `poetry run`) — so it never false-greens by running `npm` against a pnpm tree or a global `pytest` that collects nothing. **Monorepos** (e.g. a Python backend + Node frontend in one repo) opt in explicitly — point it at each sub-project and it runs and accumulates every suite:
 
 ```bash
@@ -62,7 +64,7 @@ It is **advisory** — it posts its findings as a comment on the PR and **never 
 1. **Get an OpenRouter key.** Sign up at [openrouter.ai](https://openrouter.ai), add a little credit, and create an API key. (OpenRouter is one gateway to many models — Claude, GPT, Gemini, DeepSeek — so you can switch models without changing code.)
 2. **Add the workflow.** Copy `.claude/ci/reviewer-github.yml` into your repo's `.github/workflows/` folder and commit it.
 3. **Add the key as a secret.** In GitHub: **your repo → Settings → Secrets and variables → Actions → New repository secret**. Name it exactly `OPENROUTER_API_KEY` and paste your key. It must be a **repository** secret — *not* an Environment secret (the workflow won't see an environment secret).
-4. **(Optional) pick the model.** The default is `deepseek/deepseek-chat` (cheap and solid for a second opinion). To use another, add a repository **variable** (same screen → *Variables* tab) named `LOGIC_REVIEWER_MODEL` — e.g. `google/gemini-2.5-pro`, `openai/gpt-5`, `anthropic/claude-sonnet-4-6`. Any ID from [openrouter.ai/models](https://openrouter.ai/models) works.
+4. **(Optional) pick the model.** The default is `deepseek/deepseek-chat` (cheap and solid for a second opinion). To use another, add a repository **variable** (same screen → *Variables* tab) named `LOGIC_REVIEWER_MODEL` — e.g. `google/gemini-2.5-pro`, `openai/gpt-5`, `anthropic/claude-sonnet-5`. Any ID from [openrouter.ai/models](https://openrouter.ai/models) works.
 
 Open a pull request and the reviewer posts its findings as a comment. If the model you picked is ever retired, it says so on the PR instead of failing silently.
 
@@ -75,6 +77,11 @@ Type these in Claude Code whenever you want a second opinion:
 - **`/code-review`** — Reviews everything you've changed but haven't committed yet. Finds bugs, security issues, and style problems. Like having a senior dev look over your shoulder.
 - **`/security-scan`** — Scans your whole project for security vulnerabilities (leaked secrets, injection risks, auth problems). Based on the OWASP Top 10.
 - **`/logic-review`** — Runs the cross-vendor reviewer on your current changes, then fixes the *real* findings with you reviewing each step (RED-green, surgical, never auto-commits).
+
+And two for the floor itself:
+
+- **`/init-floor`** — Scaffolds a new project's floor: `.claude/`, `verify.sh`, `.gitignore`, and the pre-commit + pre-push hooks.
+- **`/update-floor`** — Refreshes an existing project's floor infrastructure (reviewer, CI templates, starter configs) from the current plugin, without clobbering anything you customized.
 
 ### Progress Tracking (the memory)
 
@@ -174,14 +181,20 @@ From then on, every Claude session in that project will:
 ## How Everything Fits Together
 
 ```
-You install once (install.sh)
+You install the plugin once (/plugin install claude-setup@claude-setup)
     │
-    │   Sets up global rules, hooks, commands, and agents
+    │   Ships the hooks, slash commands, agents, and project template
+    │   Updates and uninstalls as one versioned unit
+    │
+You run install.sh once per computer
+    │
+    │   Copies the global rules + playbooks into ~/.claude/
     │   These apply to EVERY project automatically
     │
-You run init-claude in each project
+You run /init-floor in each project
     │
-    │   Creates project-specific config, .gitignore, secret scanning
+    │   Creates .claude/ + verify.sh, .gitignore, secret scanning,
+    │   and the pre-commit + pre-push gates
     │
 You start Claude Code
     │
@@ -232,12 +245,13 @@ claude-setup/
 │   ├── verify.sh              # The deterministic floor (two tiers: --quick / full)
 │   ├── settings.json          # Deny-rule speed bumps for secret reads + dangerous commands
 │   ├── settings.local.json    # Your personal command overrides
-│   ├── .project-gitignore     # Blocks secrets, keys, credentials from git
+│   ├── .project-gitignore     # Blocks secrets, keys, credentials from git (→ project root)
+│   ├── dot-gitignore          # Ignores CLAUDE.local.md / settings.local.json (→ .claude/.gitignore)
 │   ├── .pre-commit-hook       # Secret scan + quick floor on the staged snapshot
 │   ├── .pre-push-hook         # Full floor (adds tests) before anything leaves the machine
 │   ├── bin/review-diff.mjs    # The cross-vendor logic reviewer (advisory)
 │   ├── review/                # The reviewer's prompt / rubric
-│   ├── ci/                    # CI templates: floor + reviewer (GitHub & Bitbucket)
+│   ├── ci/                    # CI templates: floor (Node + Python) + reviewer, GitHub & Bitbucket
 │   └── configs/               # Starter eslint / tsconfig / prettier / ruff
 ├── bin/
 │   ├── init-claude            # The scaffolder behind /init-floor (works from a checkout too)
@@ -303,7 +317,7 @@ Before sharing this with teammates, verify it works cleanly:
 
 ```bash
 ./test.sh          # the full suite in a sandboxed ~/ (30 sec)
-./docker-test.sh   # full install on a clean Ubuntu container (2 min, requires Docker)
+./docker-test.sh   # full install on a clean Debian container, node:22 (2 min, requires Docker)
 ```
 
 See [TESTING.md](./TESTING.md) for a manual scenario checklist covering edge cases like existing custom rules, malformed settings, missing Node, and false positives on hooks.
