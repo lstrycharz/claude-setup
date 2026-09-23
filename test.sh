@@ -294,6 +294,32 @@ EOF
   chmod +x "$SHIMDIR/$1"
 }
 reset_shims() { rm -rf "$SHIMDIR"; mkdir -p "$SHIMDIR"; : > "$SHIMLOG"; }
+
+# Canary shims. A tool that is ENFORCING flags the known-bad fixture (non-zero +
+# the expected diagnostic); a tool that has gone SILENT (rule disabled, no files
+# matched) exits 0 on it. mkshim() above is already the silent case.
+mkshim_enforcing() { # $1=name $2=diagnostic it prints when handed the canary
+  cat > "$SHIMDIR/$1" <<EOF
+#!/bin/bash
+echo "$1 \$*" >> "$SHIMLOG"
+for a in "\$@"; do
+  case "\$a" in *verify-canary*) echo "\$a:1:1: $2 canary violation"; exit 1;; esac
+done
+exit 0
+EOF
+  chmod +x "$SHIMDIR/$1"
+}
+mkshim_crashing() { # $1=name — non-zero but NO expected diagnostic (crash/missing dep)
+  cat > "$SHIMDIR/$1" <<EOF
+#!/bin/bash
+echo "$1 \$*" >> "$SHIMLOG"
+for a in "\$@"; do
+  case "\$a" in *verify-canary*) echo "Traceback: tool exploded"; exit 2;; esac
+done
+exit 0
+EOF
+  chmod +x "$SHIMDIR/$1"
+}
 run_verify() { # $1=repo dir, $2=VERIFY_ROOTS (optional), $3=extra flag (e.g. --quick)
   ( cd "$1" && PATH="$SHIMDIR:$PATH" VERIFY_ROOTS="${2:-.}" bash "$VERIFY" ${3:-} >/dev/null 2>&1 )
 }
@@ -385,6 +411,109 @@ run_verify "$R"; rc=$?
 mkdir -p "$R/.claude"; touch "$R/.claude/verify.allow-no-tests"
 run_verify "$R"; rc=$?
 [ "$rc" -eq 0 ] && pass "verify: unsupported stack can be accepted via allow-no-tests marker" || fail "verify: opt-out marker did not pass an unsupported stack"
+
+# ============================================================
+# SECTION: canaries — prove the tools are ENFORCING, not just exiting 0
+# ============================================================
+# A check that exits 0 because it checked nothing is indistinguishable from a
+# check that passed, and the single-script design means all three gates agree
+# on that false green simultaneously. The canary hands each tool a known-bad
+# fixture and requires it to complain.
+section "verify.sh canaries (silently-lowered floor)"
+
+PYCAN="$SANDBOX/v-canary-py"
+setup_pycan() { rm -rf "$PYCAN"; mkdir -p "$PYCAN"; printf '[project]\nname = "x"\n' > "$PYCAN/pyproject.toml"; }
+
+# --- enforcing tool: canary fires, floor is green ---
+reset_shims; mkshim_enforcing ruff "invalid-syntax"; mkshim_enforcing mypy "[syntax]"; mkshim pytest
+setup_pycan; run_verify "$PYCAN"; rc=$?
+[ "$rc" -eq 0 ] && pass "canary: green when the tools flag the known-bad fixture" || fail "canary: false red when tools are enforcing"
+grep -q 'verify-canary' "$SHIMLOG" && pass "canary: the fixture is actually handed to the tool" || fail "canary: tool was never invoked on a fixture"
+
+# --- silent tool: exits 0 on a known-bad file → the floor is lowered → RED ---
+reset_shims; mkshim ruff; mkshim_enforcing mypy "[syntax]"; mkshim pytest
+setup_pycan; run_verify "$PYCAN"; rc=$?
+[ "$rc" -ne 0 ] && pass "canary: RED when a tool exits 0 on the known-bad fixture" || fail "canary: silent tool passed — this is the bug the canary exists to catch"
+
+# --- non-zero but no expected diagnostic: inconclusive, must NOT be a silent pass ---
+reset_shims; mkshim_crashing ruff; mkshim_enforcing mypy "[syntax]"; mkshim pytest
+setup_pycan; OUT=$( cd "$PYCAN" && PATH="$SHIMDIR:$PATH" bash "$VERIFY" 2>&1 ); rc=$?
+echo "$OUT" | grep -qi "inconclusive" && pass "canary: a crashing tool is reported inconclusive, not counted as fired" || fail "canary: a crash masqueraded as a passing canary"
+[ "$rc" -eq 0 ] && pass "canary: inconclusive does not become a false red" || fail "canary: inconclusive turned the floor red"
+
+# --- quick tier stays fast: no canary work at commit time ---
+reset_shims; mkshim ruff; mkshim mypy; mkshim pytest
+setup_pycan; run_verify "$PYCAN" "." "--quick"; rc=$?
+[ "$rc" -eq 0 ] && pass "canary: --quick stays green (canaries are a full-tier check)" || fail "canary: --quick was slowed/failed by canaries"
+grep -q 'verify-canary' "$SHIMLOG" && fail "canary: --quick ran canaries (commit-time tax)" || pass "canary: --quick runs no canaries"
+
+# --- the fixture never survives the run ---
+reset_shims; mkshim_enforcing ruff "invalid-syntax"; mkshim_enforcing mypy "[syntax]"; mkshim pytest
+setup_pycan; run_verify "$PYCAN"
+ls -d "$PYCAN"/.verify-canary-* >/dev/null 2>&1 && fail "canary: fixture left behind in the project" || pass "canary: fixture cleaned up after the run"
+
+# --- TypeScript: a silent tsc (matched no files / strict off) turns the floor RED ---
+reset_shims; mkshim npm; mkshim tsc
+TSCAN="$SANDBOX/v-canary-ts"; mkdir -p "$TSCAN"
+printf '{ "scripts": { "typecheck": "tsc --noEmit", "test": "x" } }\n' > "$TSCAN/package.json"
+printf '{ "compilerOptions": { "strict": true } }\n' > "$TSCAN/tsconfig.json"
+run_verify "$TSCAN"; rc=$?
+[ "$rc" -ne 0 ] && pass "canary: RED when tsc exits 0 on a known-bad type" || fail "canary: silent tsc passed"
+
+# --- ESLint: enforcing / silent / ignored-fixture (flat-config files matching) ---
+mk_node_canary_repo() { # $1=dir
+  rm -rf "$1"; mkdir -p "$1"
+  printf '{ "scripts": { "test": "x" } }\n' > "$1/package.json"
+  printf 'export default [];\n' > "$1/eslint.config.mjs"
+}
+ESCAN="$SANDBOX/v-canary-es"
+
+reset_shims; mkshim npm; mkshim_enforcing eslint "Parsing error"
+mk_node_canary_repo "$ESCAN"; run_verify "$ESCAN"; rc=$?
+[ "$rc" -eq 0 ] && pass "canary: green when eslint flags the known-bad fixture" || fail "canary: false red on an enforcing eslint"
+grep -q 'verify-canary' "$SHIMLOG" && pass "canary: eslint was actually handed the fixture" || fail "canary: eslint canary never ran"
+
+reset_shims; mkshim npm; mkshim eslint
+mk_node_canary_repo "$ESCAN"; run_verify "$ESCAN"; rc=$?
+[ "$rc" -ne 0 ] && pass "canary: RED when eslint exits 0 on the known-bad fixture" || fail "canary: silent eslint passed"
+
+# An eslint that SKIPS the fixture (no matching flat config / ignored) proves
+# nothing either way — it must be inconclusive, never a false red.
+reset_shims; mkshim npm
+cat > "$SHIMDIR/eslint" <<'EOF'
+#!/bin/bash
+echo "eslint $*" >> "$SHIMLOG_PLACEHOLDER"
+echo "warning: File ignored because of a matching ignore pattern."
+exit 0
+EOF
+sed -i '' "s|\$SHIMLOG_PLACEHOLDER|$SHIMLOG|" "$SHIMDIR/eslint" 2>/dev/null || sed -i "s|\$SHIMLOG_PLACEHOLDER|$SHIMLOG|" "$SHIMDIR/eslint"
+chmod +x "$SHIMDIR/eslint"
+mk_node_canary_repo "$ESCAN"
+OUT=$( cd "$ESCAN" && PATH="$SHIMDIR:$PATH" bash "$VERIFY" 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] && pass "canary: an eslint that skips the fixture is not a false red" || fail "canary: false red when eslint never examined the fixture"
+echo "$OUT" | grep -qi "inconclusive" && pass "canary: a skipped eslint fixture is reported inconclusive" || fail "canary: skipped fixture was silently treated as proof"
+
+# S3: the Node quick tier must also skip canary work (early return).
+reset_shims; mkshim npm; mkshim eslint
+mk_node_canary_repo "$ESCAN"; run_verify "$ESCAN" "." "--quick"; rc=$?
+[ "$rc" -eq 0 ] && pass "canary: node --quick stays green (no canaries at commit time)" || fail "canary: node --quick was failed by canaries"
+grep -q 'verify-canary' "$SHIMLOG" && fail "canary: node --quick ran canaries (commit-time tax)" || pass "canary: node --quick runs no canaries"
+
+# A rule probe that does not fire is ADVISORY only — never a red (a project may
+# legitimately disable that rule; a false red gets the whole canary deleted).
+reset_shims; mkshim npm
+cat > "$SHIMDIR/eslint" <<'EOF'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in *canary_syntax*) echo "Parsing error: unexpected token"; exit 1;; esac
+done
+exit 0
+EOF
+chmod +x "$SHIMDIR/eslint"
+mk_node_canary_repo "$ESCAN"
+OUT=$( cd "$ESCAN" && PATH="$SHIMDIR:$PATH" bash "$VERIFY" 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] && pass "canary: a disabled RULE is advisory, not a red" || fail "canary: a disabled rule false-redded the floor"
+echo "$OUT" | grep -qi "ADVISORY" && pass "canary: the disabled rule is surfaced as an advisory" || fail "canary: disabled rule was silent"
 
 # --- actionlint: lint GitHub Actions workflows when present (catch bugs locally) ---
 reset_shims; mkshim actionlint
