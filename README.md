@@ -53,6 +53,26 @@ Defaults to the repo root; the opt-in is one line, not magic directory-walking.
 
 If a code project has **no test runner at all**, `verify.sh` now *blocks* rather than just warning — closing the "passes because it has no tests" gap that the floor exists to prevent. Accept the gap deliberately (a config repo, a scratch spike) with a marker file: `.claude/verify.allow-no-tests`.
 
+#### Canaries — proving the tools are actually enforcing
+
+One honest caveat about the three gates above: they run the *same script*, so they don't independently corroborate a green. They reproduce one check three times. That kills drift, but it means a check which quietly stops examining anything goes green in all three places at once — and every check here originally consumed just one bit from its tool, the exit code. `mypy` over zero files prints `Success` and exits 0. A `tsconfig` whose `include` stopped matching exits 0. A lint rule switched off in **config** (not code) exits 0. Nothing in the harness read the floor's *height* at the moment it ran, so a lowered floor looked exactly like a passing one — only faster.
+
+So before trusting a green, `verify.sh` hands each tool a file that is **known bad** and requires it to complain:
+
+| result | meaning |
+|---|---|
+| **fired** — non-zero *and* the expected diagnostic | the tool is genuinely enforcing |
+| **silent** — exit 0 on a file it cannot even parse | it examined nothing → **red** |
+| **inconclusive** — non-zero without that diagnostic, or the fixture was ignored/unmatched | loud warning, never counted as proof |
+
+That third state matters: a missing or crashing binary also exits non-zero, and must never be able to masquerade as a passing canary.
+
+The **blocking** probe is an unparseable fixture, because a syntax error fires no matter which rules are selected — it proves the tool reads files under *your* config without betting on any one rule being on. The **advisory** probe is rule-specific (`F401`, `no-unused-vars`); a project may legitimately disable those, so it warns rather than blocks. A canary that cries wolf is a canary you delete.
+
+Covers `ruff`, `mypy`, `eslint`, and `tsc`. Fixtures are generated at run time inside the project (config resolution walks up from the file, so a `/tmp` canary would miss the very config under test), created after the real checks, and swept before them — so one left behind by an interrupted run can never break your real lint. Full tier only, so `--quick` stays fast at commit time.
+
+This can't be made unfalsifiable — every check added is itself something that can be quietly lowered. The goal isn't preventing degradation, it's denying it the ability to look like success. **"Faster green" should be an alarm, not a pleasant surprise.**
+
 ### The cross-vendor reviewer (a second opinion)
 
 The floor catches code that's *mechanically* wrong (won't lint, won't typecheck, fails tests). It can't catch code that's *designed* wrong — a swallowed error, a missing timeout, an unvalidated input crossing a trust boundary. So there's a second layer: an independent **different-vendor** AI (DeepSeek by default, via OpenRouter — deliberately not Claude, so it doesn't share Claude's blind spots) reads each PR's diff and flags semantic and security risks.
@@ -242,7 +262,7 @@ claude-setup/
 │   ├── CLAUDE.md              # Project instructions (auto-filled after first plan)
 │   ├── CLAUDE.local.md        # Your personal preferences (not shared with team)
 │   ├── PROGRESS.md            # Cross-session progress tracking
-│   ├── verify.sh              # The deterministic floor (two tiers: --quick / full)
+│   ├── verify.sh              # The deterministic floor (two tiers + enforcement canaries)
 │   ├── settings.json          # Deny-rule speed bumps for secret reads + dangerous commands
 │   ├── settings.local.json    # Your personal command overrides
 │   ├── .project-gitignore     # Blocks secrets, keys, credentials from git (→ project root)
@@ -310,6 +330,23 @@ on each machine (it only copies rules + playbooks now — it never touches
 **Your projects**: run `/update-floor` in a project to refresh its `.claude/`
 infrastructure (reviewer, CI templates, configs) from the current plugin —
 your customized `verify.sh`, `CLAUDE.md`, and settings are never clobbered.
+
+⚠️ **The flip side: an existing project never receives `verify.sh` improvements.**
+`verify.sh` is preserved precisely *because* you customize it, which also means
+`/update-floor` will not bring you a newer floor — canaries included. New
+projects scaffolded with `/init-floor` get the current one; existing projects
+have to opt in. To adopt a newer floor in a project you already have:
+
+```bash
+# see what you'd be getting (your copy vs the plugin's current one)
+diff .claude/verify.sh "$CLAUDE_PLUGIN_ROOT/template/verify.sh"
+
+# if you never customized it, take the new one wholesale:
+rm .claude/verify.sh && /update-floor      # restores it from the plugin
+```
+
+If you *did* customize it, merge the new sections by hand — the floor is the
+one file the harness will not silently overwrite for you.
 
 ## Testing
 
