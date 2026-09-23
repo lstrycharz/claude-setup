@@ -1,2 +1,5 @@
 CLAUDE.local.md
 settings.local.json
+
+# verify.sh canary fixtures (ephemeral; a leftover means an interrupted run)
+.verify-canary-*
