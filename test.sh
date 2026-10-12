@@ -598,6 +598,26 @@ rev "const v=m.parseVerdict({choices:[{message:{tool_calls:[{function:{arguments
   && pass "reviewer: parses tool-call arguments when content is empty" || fail "reviewer: failed to parse tool-call arguments"
 rev "let t=false; try{m.parseVerdict({choices:[{message:{content:'not json at all'}}]})}catch{t=true} process.exit(t?0:1)" \
   && pass "reviewer: malformed model output throws (not silently passed)" || fail "reviewer: malformed output did not throw"
+# "verdict is not valid JSON" alone was undiagnosable (research-synthesis-agent
+# PR #1, Kimi via CoreWeave). Say what came back: one line, capped.
+rev "let e=''; try{m.parseVerdict({choices:[{message:{content:'\\\`\\\`\\\`json\\n{\"status\":'+'x'.repeat(500)}}]})}catch(x){e=x.message} process.exit(e.includes('json {')&&!e.includes('\\n')&&e.length<200?0:1)" \
+  && pass "reviewer: an unparseable verdict shows what came back (one line, capped)" || fail "reviewer: unparseable verdict hides what the model returned"
+# Kimi via CoreWeave put ~48KB of its thinking in \`content\`, verdict last
+# (research-synthesis-agent PR #1). Take the JSON object that ENDS the reply —
+# thinking can't come after the answer — and validate it as strictly as ever.
+rev "const V=JSON.stringify({status:'REJECT',critical_flags:['a {b} c'],warnings:[]}); const v=m.parseVerdict({choices:[{message:{content:'Let me think. {x: 1} looks fine {not json}.\\n\\n'+V}}]}); process.exit(v.status==='REJECT'&&v.critical_flags[0]==='a {b} c'?0:1)" \
+  && pass "reviewer: a verdict after the model's thinking is still read" || fail "reviewer: verdict after thinking is unparseable"
+rev "const V=JSON.stringify({status:'REJECT',critical_flags:['a {b} c'],warnings:[]}); const v=m.parseVerdict({choices:[{message:{content:'\\x60\\x60\\x60json\\n'+V+'\\n\\x60\\x60\\x60'}}]}); process.exit(v.status==='REJECT'&&v.critical_flags[0]==='a {b} c'?0:1)" \
+  && pass "reviewer: a fenced JSON verdict is still read" || fail "reviewer: fenced JSON verdict is unparseable"
+rev "let t=false; try{m.parseVerdict({choices:[{message:{content:'thinking... {\\x22status\\x22:\\x22PASS\\x22} then more prose'}}]})}catch{t=true} process.exit(t?0:1)" \
+  && pass "reviewer: a JSON object mid-thinking is NOT taken as the verdict" || fail "reviewer: took a mid-thinking object as the verdict"
+# ...and one that ENDS the reply but isn't a verdict still fails the status gate.
+rev "let t=false; try{m.parseVerdict({choices:[{message:{content:'prose ends with {}'}}]})}catch(x){t=x.message.includes('invalid status')} process.exit(t?0:1)" \
+  && pass "reviewer: a trailing non-verdict object is rejected by the status gate" || fail "reviewer: trailing non-verdict object accepted"
+# The backward scan is O(n) parses of O(n) suffixes: nested-object junk took 80s
+# on 240KB, after the fetch timeout has already stopped protecting us. Bounded.
+rev "const c=Array(30000).fill('{\\x22a\\x22:').join('')+'}'; const t=Date.now(); try{m.parseVerdict({choices:[{message:{content:c}}]})}catch{} process.exit(Date.now()-t<3000?0:1)" \
+  && pass "reviewer: adversarial brace-heavy output can't stall the parse" || fail "reviewer: brace-heavy output stalls the verdict parse"
 
 # --- advisory gate: REJECT must NOT block ---
 rev "const e=m.advisoryExit({status:'REJECT',critical_flags:['x'],warnings:[]}); process.exit(e.code===0?0:1)" \
