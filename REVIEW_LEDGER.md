@@ -44,3 +44,4 @@ match", exit-code behaviour — are a different failure class from the judgement
 calls it is actually asked for (swallowed errors, missing timeouts, unvalidated
 input crossing a trust boundary). A category in that first class should probably
 never block, however good its record looks.
+| 2026-10-12 | research-synthesis-agent#1 | moonshotai/kimi-k2.7-code | exception-handling | Claimed `new URL(base).hostname` in `review-diff.mjs` is outside any try, so a malformed `LOGIC_REVIEWER_BASE_URL` would crash instead of exiting gracefully | false-positive | No such env var exists (it's `OPENROUTER_BASE_URL`). `base` is the return value of `validateBaseUrl`, which already parsed the same string with `new URL` inside a try and only strips trailing slashes, so the second parse cannot throw. Confirmed independently by the code-reviewer on #36. Another execution/data-flow claim made from the diff alone. |
