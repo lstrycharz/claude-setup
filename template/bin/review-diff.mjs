@@ -146,15 +146,15 @@ export function capDiff(diff, opts = {}) {
 // fences. The diff is framed as UNTRUSTED DATA to blunt prompt injection.
 // On OpenRouter, route to the fastest providers: the default is price-weighted
 // across providers of very different speed, and a slow pick blows the timeout.
-// Ask for reasoning explicitly, and only from providers that honour every
-// parameter: speed alone picked one that defaults reasoning off (#36: 2s, 0
-// reasoning tokens) — faster because it stopped thinking.
+// Ask for reasoning explicitly: speed alone picked a provider that defaults it
+// off (#36: 2s, 0 reasoning tokens) — faster because it stopped thinking. Don't
+// set require_parameters: the default model has no provider that accepts
+// `reasoning`, so requiring it would make every request unroutable. Models
+// that can't reason just ignore it; describeCall logs the reasoning tokens.
 export function buildPayload({ systemPrompt, diff, model, openrouter = false }) {
   return {
     model,
-    ...(openrouter
-      ? { provider: { sort: 'throughput', require_parameters: true }, reasoning: { enabled: true } }
-      : {}),
+    ...(openrouter ? { provider: { sort: 'throughput' }, reasoning: { enabled: true } } : {}),
     temperature: 0,
     response_format: { type: 'json_object' },
     messages: [
