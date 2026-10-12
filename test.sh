@@ -23,6 +23,7 @@ fail() { echo -e "  ${RED}✗${NC} $1"; FAIL=$((FAIL+1)); FAILED_TESTS+=("$1"); 
 section() { echo ""; echo -e "${YELLOW}→ $1${NC}"; }
 
 cleanup() {
+  [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null
   export HOME="$ORIG_HOME"
   rm -rf "$SANDBOX"
 }
@@ -649,6 +650,49 @@ rev "process.exit(m.isModelError(400,'max_tokens exceeds model limit')===false?0
 rev "const c=m.renderModelWarning('deepseek/deepseek-v4-pro','not a valid model ID'); process.exit(c.includes('deepseek/deepseek-v4-pro')&&c.includes('LOGIC_REVIEWER_MODEL')&&c.includes('logic-reviewer')?0:1)" \
   && pass "reviewer: renderModelWarning names the model + how to fix it" || fail "reviewer: renderModelWarning missing model/fix/marker"
 
+# --- a reviewer that produced no verdict must SAY so on the PR ---
+# The post step only touches the PR when a comment file exists. Exit 0 with no
+# file left the previous comment in place — a stale PASS that reads as current.
+# A local fake endpoint: /garbage returns an unparseable verdict, anything else
+# never answers (so the client's timeout fires).
+FAKE_PORT_FILE="$SANDBOX/fake-model.port"
+node -e "
+const s=require('http').createServer((q,r)=>{
+  if(q.url.startsWith('/garbage')){r.writeHead(200,{'content-type':'application/json'});r.end(JSON.stringify({choices:[{message:{content:'not json'}}]}));}
+});
+s.listen(0,'127.0.0.1',()=>require('fs').writeFileSync(process.argv[1],String(s.address().port)));
+" "$FAKE_PORT_FILE" &
+FAKE_PID=$!
+for _ in $(seq 50); do [ -s "$FAKE_PORT_FILE" ] && break; sleep 0.1; done
+FAKE_PORT=$(cat "$FAKE_PORT_FILE" 2>/dev/null)
+# No port → requests hit port 80, fail as a NETWORK error, and both cases below
+# would pass via the wrong path. Say so instead of passing vacuously.
+[ -n "$FAKE_PORT" ] || fail "reviewer: fake model endpoint did not start (no-verdict tests below are void)"
+printf 'diff --git a/a.js b/a.js\n+x\n' > "$SANDBOX/rev.diff"
+# rev_unreviewed <base-path> → runs the reviewer against the fake; prints EXIT:<code>
+rev_unreviewed() {
+  rm -f "$SANDBOX/rev-comment.md"
+  OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/$1" REVIEW_TIMEOUT_MS=300 \
+    REVIEW_DIFF_FILE="$SANDBOX/rev.diff" REVIEW_COMMENT_FILE="$SANDBOX/rev-comment.md" \
+    node "$REV" </dev/null >/dev/null 2>&1
+  echo "EXIT:$?"
+}
+OUT=$(rev_unreviewed hang)
+if [ "$OUT" = "EXIT:0" ] && grep -q "<!-- logic-reviewer -->" "$SANDBOX/rev-comment.md" 2>/dev/null \
+   && grep -q "Not reviewed — the model could not be reached" "$SANDBOX/rev-comment.md"; then
+  pass "reviewer: a timeout leaves a 'Not reviewed' PR comment (exit 0, advisory)"
+else
+  fail "reviewer: a timeout left no PR comment — a stale verdict reads as current"
+fi
+OUT=$(rev_unreviewed garbage)
+if [ "$OUT" = "EXIT:0" ] && grep -q "<!-- logic-reviewer -->" "$SANDBOX/rev-comment.md" 2>/dev/null \
+   && grep -q "Not reviewed — the model returned an unparseable verdict" "$SANDBOX/rev-comment.md"; then
+  pass "reviewer: an unparseable verdict leaves a 'Not reviewed' PR comment (exit 0, advisory)"
+else
+  fail "reviewer: an unparseable verdict left no PR comment — a stale verdict reads as current"
+fi
+kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null
+
 # ============================================================
 # SECTION: init-claude behavior
 # ============================================================
@@ -927,6 +971,7 @@ section "reviewer calibration ledger"
 [ -f "$SCRIPT_DIR/template/review-ledger.md" ] && pass "template ships review-ledger.md" || fail "template/review-ledger.md missing"
 [ -f "$SCRIPT_DIR/REVIEW_LEDGER.md" ] && pass "the harness keeps its own REVIEW_LEDGER.md" || fail "REVIEW_LEDGER.md missing"
 grep -q "review-ledger" "$SCRIPT_DIR/commands/logic-review.md" && pass "/logic-review records verdicts in the ledger" || fail "/logic-review does not mention the ledger"
+grep -q "Not reviewed" "$SCRIPT_DIR/commands/logic-review.md" && pass "/logic-review reports a no-verdict run as not reviewed" || fail "/logic-review would treat a no-verdict run as clean"
 
 LEDG="$SANDBOX/proj-ledger"
 rm -rf "$LEDG"; mkdir -p "$LEDG"

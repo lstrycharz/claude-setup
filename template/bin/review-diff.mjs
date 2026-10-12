@@ -16,7 +16,8 @@
 //     base URL, or an un-computable diff (missing/unfetched base ref) — so a
 //     misconfigured gate is visible instead of silently no-op-ing forever.
 //   - A network/timeout error or an unparseable verdict is logged and skipped
-//     (exit 0) — the reviewer being down must not wedge the pipeline.
+//     (exit 0) — the reviewer being down must not wedge the pipeline — but it
+//     still writes a "Not reviewed" comment, so silence never reads as a PASS.
 //
 // No npm dependencies — native fetch + Node stdlib, matching the .claude hooks.
 //
@@ -283,6 +284,24 @@ export function renderModelWarning(model, detail = '') {
   ].filter(Boolean).join('\n');
 }
 
+// PR-comment body for a run that produced no verdict (timeout, network, 5xx).
+// Silence here is not neutral: the post step leaves the previous comment alone,
+// so an earlier PASS would keep reading as the verdict on the latest push.
+export function renderNotReviewed(reason, detail = '') {
+  // detail can echo a response body or model output — a code span keeps any
+  // markdown/HTML in it inert.
+  const d = String(detail).replace(/[\r\n]+/g, ' ').replace(/`/g, "'").slice(0, 200);
+  return [
+    '<!-- logic-reviewer -->',
+    '### 🤖 Cross-vendor logic review (advisory)',
+    '',
+    `**Not reviewed — ${reason}.** No verdict was produced for this push; any earlier verdict on this PR does not cover it.`,
+    ...(d ? ['', `> \`${d}\``] : []),
+    '',
+    '_Advisory: this does not block the merge. Re-run the job to retry._',
+  ].join('\n');
+}
+
 // ── IO shell (thin; not unit-tested) ────────────────────────────────────────
 
 function getDiff() {
@@ -317,6 +336,17 @@ function loadPrompt() {
     ? process.env.LOGIC_REVIEWER_PROMPT
     : new URL('../review/logic-reviewer.md', import.meta.url);
   return fs.readFileSync(p, 'utf8');
+}
+
+// Write the PR-comment body the CI step posts onto the PR. Best-effort — a write
+// failure must not change the advisory outcome.
+function writeCommentFile(body) {
+  if (!process.env.REVIEW_COMMENT_FILE) return;
+  try {
+    fs.writeFileSync(process.env.REVIEW_COMMENT_FILE, body);
+  } catch (err) {
+    console.warn(`⚠️  could not write REVIEW_COMMENT_FILE (${err.message}); continuing.`);
+  }
 }
 
 async function callModel(base, apiKey, payload) {
@@ -375,13 +405,12 @@ async function main() {
     if (err instanceof ModelUnavailableError) {
       console.error(`⚠️  REVIEWER MODEL UNAVAILABLE — '${model}' was rejected by OpenRouter (${err.message}).`);
       console.error('    It may be deprecated or the ID may be wrong. Set LOGIC_REVIEWER_MODEL to a current OpenRouter model ID.');
-      if (process.env.REVIEW_COMMENT_FILE) {
-        try { fs.writeFileSync(process.env.REVIEW_COMMENT_FILE, renderModelWarning(model, err.message)); } catch { /* best-effort */ }
-      }
+      writeCommentFile(renderModelWarning(model, err.message));
       process.exit(0); // loud + surfaced on the PR, but advisory: a dead model must not block merges
     }
     // Reviewer unreachable — advisory mode must not wedge the pipeline.
     console.warn(`⚠️  ADVISORY — logic reviewer could not reach the model (${err.message}); skipping (not blocking).`);
+    writeCommentFile(renderNotReviewed('the model could not be reached', err.message));
     process.exit(0);
   }
 
@@ -390,19 +419,12 @@ async function main() {
     verdict = parseVerdict(apiJson);
   } catch (err) {
     console.warn(`⚠️  ADVISORY — logic reviewer returned an unparseable verdict (${err.message}); skipping (not blocking).`);
+    writeCommentFile(renderNotReviewed('the model returned an unparseable verdict', err.message));
     process.exit(0);
   }
 
-  // Surface the findings where a human will see them: write a PR-comment body the
-  // CI step posts onto the PR (CI logs get skimmed past). Best-effort — a write
-  // failure must not change the advisory outcome.
-  if (process.env.REVIEW_COMMENT_FILE) {
-    try {
-      fs.writeFileSync(process.env.REVIEW_COMMENT_FILE, renderComment(verdict, { truncated, skippedFiles, truncatedFiles, fileCount }));
-    } catch (err) {
-      console.warn(`⚠️  could not write REVIEW_COMMENT_FILE (${err.message}); continuing.`);
-    }
-  }
+  // Surface the findings where a human will see them (CI logs get skimmed past).
+  writeCommentFile(renderComment(verdict, { truncated, skippedFiles, truncatedFiles, fileCount }));
 
   const out = advisoryExit(verdict);
   for (const line of out.lines) (out.level === 'WARN' ? console.warn : console.log)(line);
