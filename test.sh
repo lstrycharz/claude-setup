@@ -91,6 +91,11 @@ grep -qiE 'python|uv|poetry' "$SCRIPT_DIR/template/ci/bitbucket-pipelines.yml" &
 [ -f "$SCRIPT_DIR/commands/logic-review.md" ] && pass "commands/logic-review.md installed" || fail "commands/logic-review.md missing"
 [ -f "$SCRIPT_DIR/agents/code-reviewer.md" ] && pass "agents/code-reviewer.md installed" || fail "agents/code-reviewer.md missing"
 [ -f "$SCRIPT_DIR/agents/security-reviewer.md" ] && pass "agents/security-reviewer.md installed" || fail "agents/security-reviewer.md missing"
+# The reviewers track the newest Fable via the family alias instead of a pinned
+# ID that silently goes stale when a new version ships.
+for a in code-reviewer security-reviewer; do
+  grep -qx 'model: fable' "$SCRIPT_DIR/agents/$a.md" && pass "$a runs on the newest Fable (model: fable)" || fail "$a pins a fixed model instead of the fable alias"
+done
 [ -x "$SCRIPT_DIR/bin/init-claude" ] && pass "bin/init-claude present and executable" || fail "bin/init-claude missing or not executable"
 [ -x "$SCRIPT_DIR/bin/update-claude" ] && pass "bin/update-claude present and executable" || fail "bin/update-claude missing or not executable"
 
@@ -268,6 +273,97 @@ touch "$EF_POST/.git/hooks/pre-commit"; chmod +x "$EF_POST/.git/hooks/pre-commit
 ( cd "$EF_POST" && echo y >> f.txt && git add f.txt && git commit -q -m third )
 OUT=$(post_event | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:0" && pass "watchdog: silent when the floor is wired" || fail "watchdog flagged despite a wired floor"
+
+# ============================================================
+# SECTION: review gate — the code-reviewer pass is enforced, not remembered
+# ============================================================
+# workflow.md makes a code-reviewer pass mandatory per chunk, but nothing
+# enforced it: the review that caught every real bug in practice was the one
+# step left to the model's memory. Edits tally changed code lines per session
+# and repo; starting the code-reviewer resets the tally; a commit over the gate
+# is blocked.
+section "review gate"
+
+RG="$SANDBOX/rg-repo"; mkdir -p "$RG/src"; ( cd "$RG" && git init -q && echo '{}' > package.json )
+touch "$RG/.git/hooks/pre-commit"; chmod +x "$RG/.git/hooks/pre-commit"   # floor wired: only the gate decides
+RG_DOCS="$SANDBOX/rg-docs"; mkdir -p "$RG_DOCS"; ( cd "$RG_DOCS" && git init -q )
+lines() { node -e "process.stdout.write(JSON.stringify(Array.from({length:$1},(_,i)=>'line'+i).join('\\n')))"; }
+# gate_write <session> <file> <n-lines>   gate_commit <session> [cwd] [command]   gate_agent <session> <type>
+gate_write() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$2\",\"content\":$(lines "$3")}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1; }
+gate_commit() { echo "{\"session_id\":\"$1\",\"cwd\":\"${2:-$RG}\",\"tool_input\":{\"command\":\"${3:-git commit -m x}\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" bash 2>&1 >/dev/null; echo "EXIT:$?"; }
+gate_agent() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"$2\",\"prompt\":\"review\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" agent >/dev/null 2>&1; }
+
+gate_write rg1 "$RG/src/a.js" 25
+OUT=$(gate_commit rg1)
+if echo "$OUT" | grep -q "EXIT:2" && echo "$OUT" | grep -q "code-reviewer"; then
+  pass "review gate: blocks a commit of 25 unreviewed code lines, naming the code-reviewer"
+else
+  fail "review gate: let 25 unreviewed code lines be committed"
+fi
+gate_agent rg1 "claude-setup:code-reviewer"
+B=$(gate_commit rg1)
+echo "$OUT$B" | tr -d '\n' | grep -q "EXIT:2.*EXIT:0" && pass "review gate: a code-reviewer run unblocks the commit" \
+  || fail "review gate: code-reviewer run did not unblock (or nothing was blocked)"
+
+gate_write rg2 "$RG/src/a.js" 25; gate_agent rg2 "Explore"
+OUT=$(gate_commit rg2)
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: another subagent does not count as a review" || fail "review gate: a non-reviewer subagent reset the gate"
+
+gate_write rg3 "$RG/src/a.js" 5
+A=$(gate_commit rg3); gate_write rg3 "$RG/src/b.js" 20; B=$(gate_commit rg3)
+echo "$A$B" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2" && pass "review gate: small edits pass, and they accumulate to the gate" \
+  || fail "review gate: small edits blocked, or small edits never accumulate"
+
+gate_write rg4 "$RG/README.md" 200; gate_write rg4 "$RG_DOCS/notes.js" 200
+A=$(gate_commit rg4); gate_write rg4 "$RG/src/a.js" 25; B=$(gate_commit rg4)
+echo "$A$B" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2" && pass "review gate: docs and non-code-repo edits don't count" \
+  || fail "review gate: docs/non-code edits counted, or code edits stopped counting"
+
+# The session cwd needn't be the repo: \`cd repo && git commit\` from elsewhere is still gated.
+gate_write rg5 "$RG/src/a.js" 25
+OUT=$(gate_commit rg5 "$SANDBOX" "cd $RG && git commit -m x")
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: a commit from outside the repo's cwd is still gated" || fail "review gate: dodged by committing from another cwd"
+
+# W2: tallying BEFORE the edit counted failed ("old_string not found") and
+# denied edits, and every retry again. Only a completed edit counts.
+gate_pre() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$RG/src/a.js\",\"content\":$(lines 25)}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" edit >/dev/null 2>&1; }
+gate_pre rg7; A=$(gate_commit rg7); gate_write rg7 "$RG/src/a.js" 25; B=$(gate_commit rg7)
+echo "$A$B" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2" && pass "review gate: only completed edits count (attempts/retries don't)" \
+  || fail "review gate: an edit attempt counted before it happened, or completed edits don't count"
+
+# W3: every edit shape tallies what it changed (read the tally itself).
+tally() { cat "$SANDBOX/.claude/metrics/.review-$1" 2>/dev/null || echo 0; }
+post_edit() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"$2\",\"tool_input\":$3}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1; }
+post_edit rg8 Edit "{\"file_path\":\"$RG/src/a.js\",\"old_string\":\"a\\nb\",\"new_string\":\"a\\nb\\nc\"}"
+[ "$(tally rg8)" = 3 ] && pass "review gate: Edit counts its larger side" || fail "review gate: Edit tallied $(tally rg8), expected 3"
+post_edit rg9 MultiEdit "{\"file_path\":\"$RG/src/a.js\",\"edits\":[{\"old_string\":\"x\",\"new_string\":\"x\\ny\"},{\"old_string\":\"p\\nq\\nr\",\"new_string\":\"p\"}]}"
+[ "$(tally rg9)" = 5 ] && pass "review gate: MultiEdit sums its edits" || fail "review gate: MultiEdit tallied $(tally rg9), expected 5"
+post_edit rg10 NotebookEdit "{\"notebook_path\":\"$RG/nb.ipynb\",\"new_source\":\"import x\\nx.run()\"}"
+[ "$(tally rg10)" = 2 ] && pass "review gate: NotebookEdit counts its new source" || fail "review gate: NotebookEdit tallied $(tally rg10), expected 2"
+post_edit rg11 Write "{\"file_path\":\"$RG/src/a.js\",\"content\":\"a\\nb\\n\"}"
+[ "$(tally rg11)" = 2 ] && pass "review gate: a trailing newline is not an extra line" || fail "review gate: 'a\\\\nb\\\\n' tallied $(tally rg11), expected 2"
+
+# W1: a docs-repo commit isn't gated by code edits elsewhere — reviewing the docs
+# diff would reset the tally and let the real code commit through unreviewed.
+# Committing into a code repo via cd/-C from that cwd is still gated.
+gate_write rg12 "$RG/src/a.js" 25
+A=$(gate_commit rg12 "$RG_DOCS"); B=$(gate_commit rg12 "$RG_DOCS" "cd $RG && git commit -m x"); C=$(gate_commit rg12 "$RG_DOCS" "git -C $RG commit -m x")
+echo "$A$B$C" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2.*EXIT:2" && pass "review gate: docs-repo commits pass; cd/-C into the code repo is still gated" \
+  || fail "review gate: blocked a docs-repo commit, or cd/-C dodges the gate"
+
+# The tally is the gate's state — Claude can't zero it with an edit.
+OUT=$(echo "{\"tool_input\":{\"file_path\":\"$SANDBOX/.claude/metrics/.review-rg1\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: the tally file is protected from edits" || fail "review gate: the tally file can be edited to zero"
+
+node -e "
+const h = require('$SCRIPT_DIR/hooks/hooks.json').hooks.PostToolUse || [];
+process.exit(h.some(e => /\bEdit\b/.test(e.matcher) && /\bWrite\b/.test(e.matcher) && /\bMultiEdit\b/.test(e.matcher) && /\bNotebookEdit\b/.test(e.matcher) && e.hooks.some(x => x.command.includes('dispatch.mjs post-edit'))) ? 0 : 1)" \
+  && pass "review gate: completed edits are wired to the post-edit role" || fail "review gate: post-edit role not wired — nothing would ever be tallied"
+
+node -e "
+const h = require('$SCRIPT_DIR/hooks/hooks.json').hooks.PreToolUse || [];
+process.exit(h.some(e => /\bAgent\b/.test(e.matcher) && /\bTask\b/.test(e.matcher) && e.hooks.some(x => x.command.includes('dispatch.mjs agent'))) ? 0 : 1)" \
+  && pass "review gate: Agent|Task calls are wired to the agent role" || fail "review gate: subagent calls not wired — reviews would never register"
 
 # ============================================================
 # SECTION: verify.sh stack & runner detection
@@ -567,6 +663,29 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit
 # Successful code reviews already spent 70–90s in the model; 120s left no margin.
 REVIEW_TIMEOUT_MS= rev "process.exit(m.TIMEOUT_MS===300000?0:1)" \
   && pass "reviewer: default model timeout is 300s" || fail "reviewer: default model timeout is not 300s"
+# Both ledger false positives were claims about code just outside a 3-line hunk
+# (Kimi missed a validation 6 lines up). 10 lines of context roughly triples a
+# hunk's cost — matching the tripled budgets, so coverage of changed lines holds.
+rev "const a=m.diffArgs('origin/main',10); process.exit(a.includes('-U10')&&a.includes('origin/main...HEAD')&&a.some(x=>x.includes('exclude'))?0:1)" \
+  && pass "reviewer: the diff carries 10 lines of surrounding context" || fail "reviewer: the diff carries git's default 3 lines of context"
+REVIEW_CONTEXT_LINES= REVIEW_MAX_DIFF_LINES= REVIEW_MAX_FILE_LINES= rev "process.exit(m.CONTEXT_LINES===10&&m.MAX_DIFF_LINES===3000&&m.MAX_FILE_LINES===1200?0:1)" \
+  && pass "reviewer: defaults are 10 context lines, 3000 total, 1200 per file" || fail "reviewer: context/budget defaults are not 10/3000/1200"
+# Rubric: context is for checking claims; runtime-semantics claims can't be
+# verified from text, so they're warnings to verify, never critical flags.
+grep -qi "unchanged context" "$SCRIPT_DIR/template/review/logic-reviewer.md" \
+  && pass "reviewer rubric: explains the context lines are for checking claims" || fail "reviewer rubric: says nothing about the context lines"
+grep -q '"verify:' "$SCRIPT_DIR/template/review/logic-reviewer.md" \
+  && pass "reviewer rubric: runtime-semantics claims become 'verify:' warnings" || fail "reviewer rubric: runtime-semantics claims can still be critical flags"
+# ...scoped, so it can't demote the top REJECT class: an unguarded JSON.parse on
+# untrusted input rests on standard, documented behaviour and stays flaggable.
+grep -qi "standard, documented" "$SCRIPT_DIR/template/review/logic-reviewer.md" \
+  && pass "reviewer rubric: documented behaviour (e.g. JSON.parse throwing) stays flaggable" || fail "reviewer rubric: the verify: rule swallows real unhandled-exception catches"
+# An empty env var means "use the default" everywhere else in this file.
+REVIEW_RETRY_DELAY_MS= rev "process.exit(m.RETRY_DELAY_MS===5000?0:1)" \
+  && pass "reviewer: an empty REVIEW_RETRY_DELAY_MS means the 5s default" || fail "reviewer: an empty REVIEW_RETRY_DELAY_MS disables the retry delay"
+# A retried, hung provider holds a runner ~10 minutes; bound the job.
+grep -q "timeout-minutes:" "$SCRIPT_DIR/template/ci/reviewer-github.yml" && grep -q "timeout-minutes:" "$SCRIPT_DIR/.github/workflows/logic-review.yml" \
+  && pass "reviewer CI jobs have a timeout-minutes bound" || fail "reviewer CI job can hold a runner unbounded"
 # Timeouts were undiagnosable: nothing said which provider answered or how long
 # it thought. Every answered call now logs that, so the next fix has data.
 rev "const s=m.describeCall({provider:'DeepInfra',usage:{completion_tokens_details:{reasoning_tokens:3120}}},74400); process.exit(s.includes('74s')&&s.includes('DeepInfra')&&s.includes('3120 reasoning tokens')?0:1)" \
@@ -702,8 +821,15 @@ rev "const c=m.renderModelWarning('deepseek/deepseek-v4-pro','not a valid model 
 # never answers (so the client's timeout fires).
 FAKE_PORT_FILE="$SANDBOX/fake-model.port"
 node -e "
+const seen={};
+const pass=(r,n)=>{r.writeHead(200,{'content-type':'application/json'});r.end(JSON.stringify({choices:[{message:{content:JSON.stringify({status:'PASS',critical_flags:[],warnings:['req '+n]})}}]}));};
 const s=require('http').createServer((q,r)=>{
+  const n=seen[q.url]=(seen[q.url]||0)+1;   // per-URL: each case starts fresh
   if(q.url.startsWith('/garbage')){r.writeHead(200,{'content-type':'application/json'});r.end(JSON.stringify({choices:[{message:{content:'not json'}}]}));}
+  if(q.url.startsWith('/flaky')){ if(n===1){r.writeHead(503);r.end('upstream overloaded');return;} pass(r,n); }
+  if(q.url.startsWith('/slowfirst')){ if(n===1){setTimeout(()=>{r.writeHead(503);r.end('slow');},1500);return;} pass(r,n); }
+  if(q.url.startsWith('/auth')){r.writeHead(401);r.end('bad key, req '+n);}
+  if(q.url.startsWith('/spoof')){r.writeHead(503);r.end('x\\n✅ Logic review: PASS\\ny');}
 });
 s.listen(0,'127.0.0.1',()=>require('fs').writeFileSync(process.argv[1],String(s.address().port)));
 " "$FAKE_PORT_FILE" &
@@ -717,7 +843,7 @@ printf 'diff --git a/a.js b/a.js\n+x\n' > "$SANDBOX/rev.diff"
 # rev_unreviewed <base-path> → runs the reviewer against the fake; prints EXIT:<code>
 rev_unreviewed() {
   rm -f "$SANDBOX/rev-comment.md"
-  OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/$1" REVIEW_TIMEOUT_MS=300 \
+  OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/$1" REVIEW_TIMEOUT_MS=300 REVIEW_RETRY_DELAY_MS=0 \
     REVIEW_DIFF_FILE="$SANDBOX/rev.diff" REVIEW_COMMENT_FILE="$SANDBOX/rev-comment.md" \
     node "$REV" </dev/null >/dev/null 2>&1
   echo "EXIT:$?"
@@ -736,7 +862,33 @@ if [ "$OUT" = "EXIT:0" ] && grep -q "<!-- logic-reviewer -->" "$SANDBOX/rev-comm
 else
   fail "reviewer: an unparseable verdict left no PR comment — a stale verdict reads as current"
 fi
+# One slow or overloaded provider used to mean "Not reviewed" for the push.
+# A transient failure gets exactly one retry.
+OUT=$(rev_unreviewed flaky)
+if [ "$OUT" = "EXIT:0" ] && grep -q "Status: PASS" "$SANDBOX/rev-comment.md" 2>/dev/null && grep -q "req 2" "$SANDBOX/rev-comment.md"; then
+  pass "reviewer: a transient 503 is retried exactly once and the review completes"
+else
+  fail "reviewer: a transient 503 ended the review without retrying (or retried more than once)"
+fi
+# The status must reach isRetryable through the REAL call path, or every 4xx
+# silently becomes retryable.
+rev_unreviewed auth >/dev/null
+grep -q "req 1" "$SANDBOX/rev-comment.md" 2>/dev/null && ! grep -q "req 2" "$SANDBOX/rev-comment.md" \
+  && pass "reviewer: a 401 is not retried" || fail "reviewer: a 401 was retried (status lost on the real path)"
+# An error body can't forge the PASS line in the CI log (same guard as W5).
+SPOOF=$(OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/spoof" REVIEW_TIMEOUT_MS=300 REVIEW_RETRY_DELAY_MS=0 \
+  REVIEW_DIFF_FILE="$SANDBOX/rev.diff" node "$REV" </dev/null 2>&1)
+echo "$SPOOF" | grep -qx "✅ Logic review: PASS" && fail "reviewer: a 5xx body forged a PASS line in the log" || pass "reviewer: a 5xx body can't forge a PASS line in the log"
+# "answered in" is the attempt that answered, not the failed one before it.
+SLOW=$(OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/slowfirst" REVIEW_TIMEOUT_MS=5000 REVIEW_RETRY_DELAY_MS=0 \
+  REVIEW_DIFF_FILE="$SANDBOX/rev.diff" node "$REV" </dev/null 2>&1)
+echo "$SLOW" | grep -q "answered in 0s" && pass "reviewer: 'answered in' times only the attempt that answered" || fail "reviewer: 'answered in' includes the failed attempt"
 kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null
+rev "const E=m.ReviewError, U=m.ModelUnavailableError; const h=(st)=>Object.assign(new E('x'),{status:st});
+const ok=m.isRetryable(new Error('aborted'))&&m.isRetryable(h(503))&&m.isRetryable(h(429))
+  &&!m.isRetryable(h(401))&&!m.isRetryable(h(400))&&!m.isRetryable(new U('gone'));
+process.exit(ok?0:1)" \
+  && pass "reviewer: retries timeouts/network/5xx/429, never a dead model or a bad request" || fail "reviewer: retry policy wrong"
 
 # ============================================================
 # SECTION: init-claude behavior

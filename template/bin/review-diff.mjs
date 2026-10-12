@@ -27,8 +27,11 @@
 //   OPENROUTER_BASE_URL    default https://openrouter.ai/api/v1  (swap for a
 //                          local Ollama/vLLM OpenAI-compatible endpoint)
 //   REVIEW_BASE_REF        default origin/main
-//   REVIEW_MAX_DIFF_LINES  default 1000 (cost/context cap)
-//   REVIEW_TIMEOUT_MS      default 300000
+//   REVIEW_MAX_DIFF_LINES  default 3000 (cost/context cap)
+//   REVIEW_MAX_FILE_LINES  default 1200 (per-file cap)
+//   REVIEW_CONTEXT_LINES   default 10 (unchanged lines around each change)
+//   REVIEW_TIMEOUT_MS      default 300000 (per attempt)
+//   REVIEW_RETRY_DELAY_MS  default 5000 (pause before the one retry)
 //   REVIEW_DIFF_FILE       read the diff from a file instead of git (testing)
 //   LOGIC_REVIEWER_PROMPT  path to the system prompt (default: ../review/...)
 
@@ -45,9 +48,19 @@ export function numEnv(raw, fallback) {
   return Number.isInteger(n) && n >= 1 ? n : fallback;
 }
 
-const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 1000);
-const MAX_FILE_LINES = numEnv(process.env.REVIEW_MAX_FILE_LINES, 400);
+// git's default 3 lines of context left the reviewer guessing about code just
+// outside each hunk — both ledger false positives were exactly that (Kimi
+// missed a validation 6 lines up). 10 lines roughly triples a hunk's cost,
+// matching the tripled budgets, so changed lines aren't crowded out; 30 would
+// have cost ~5.5x and truncated mid-size PRs that used to fit.
+export const CONTEXT_LINES = numEnv(process.env.REVIEW_CONTEXT_LINES, 10);
+export const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 3000);
+export const MAX_FILE_LINES = numEnv(process.env.REVIEW_MAX_FILE_LINES, 1200);
 export const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 300000);
+// Like numEnv, but 0 is allowed (tests); unset, empty or garbage → default.
+const rawRetryDelay = String(process.env.REVIEW_RETRY_DELAY_MS ?? '').trim();
+export const RETRY_DELAY_MS =
+  rawRetryDelay !== '' && Number.isInteger(Number(rawRetryDelay)) && Number(rawRetryDelay) >= 0 ? Number(rawRetryDelay) : 5000;
 
 export class ReviewError extends Error {}
 // A model OpenRouter rejects as unknown/deprecated — kept distinct from a
@@ -312,6 +325,15 @@ export function describeCall(apiJson, elapsedMs) {
   return `ℹ️  reviewer answered in ${Math.round(elapsedMs / 1000)}s via ${provider}${extra}`;
 }
 
+// Worth one more try: a timeout, a network failure, a 5xx or a 429 — failures
+// a different moment or provider can fix. Never a dead model or a bad request,
+// which would only fail twice.
+export function isRetryable(err) {
+  if (err instanceof ModelUnavailableError) return false;
+  if (Number.isInteger(err?.status)) return err.status >= 500 || err.status === 429;
+  return true; // no HTTP status: a timeout or network error
+}
+
 // PR-comment body for a dead model: name it and say exactly how to fix it, so a
 // deprecated model surfaces as a clear "update me" message, not a silent skip.
 export function renderModelWarning(model, detail = '') {
@@ -347,6 +369,14 @@ export function renderNotReviewed(reason, detail = '') {
   ].join('\n');
 }
 
+// The git diff invocation: base...HEAD with surrounding context, minus
+// lockfiles and build output.
+export function diffArgs(base, contextLines) {
+  return ['diff', `-U${contextLines}`, `${base}...HEAD`, '--', '.',
+    ':(exclude)*.lock', ':(exclude)*-lock.json',
+    ':(exclude)dist/*', ':(exclude)build/*'];
+}
+
 // ── IO shell (thin; not unit-tested) ────────────────────────────────────────
 
 function getDiff() {
@@ -357,13 +387,7 @@ function getDiff() {
   }
   const base = process.env.REVIEW_BASE_REF || 'origin/main';
   try {
-    return execFileSync(
-      'git',
-      ['diff', `${base}...HEAD`, '--', '.',
-        ':(exclude)*.lock', ':(exclude)*-lock.json',
-        ':(exclude)dist/*', ':(exclude)build/*'],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    );
+    return execFileSync('git', diffArgs(base, CONTEXT_LINES), { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   } catch (err) {
     // A git failure is NOT an empty diff. Swallowing it here used to print
     // "✅ No code changes to review" on a missing base ref / bad
@@ -409,9 +433,29 @@ async function callModel(base, apiKey, payload) {
     if (isModelError(res.status, body)) {
       throw new ModelUnavailableError(`HTTP ${res.status}: ${body.slice(0, 200)}`);
     }
-    throw new ReviewError(`HTTP ${res.status}: ${body.slice(0, 200)}`);
+    throw Object.assign(new ReviewError(`HTTP ${res.status}: ${body.slice(0, 200)}`), { status: res.status });
   }
   return res.json();
+}
+
+// Error text can carry a response body; one line only, so it can't forge a
+// log line such as "✅ Logic review: PASS" (same guard as advisoryExit).
+const oneLine = (s) => String(s).replace(/[\r\n]+/g, ' ');
+
+// One slow or overloaded provider used to mean "Not reviewed" for the push.
+// Returns the answer and how long the attempt that ANSWERED took, so the log
+// doesn't charge a failed attempt to the provider that succeeded.
+async function callWithRetry(base, apiKey, payload) {
+  let attemptStarted = Date.now();
+  try {
+    return { apiJson: await callModel(base, apiKey, payload), ms: Date.now() - attemptStarted };
+  } catch (err) {
+    if (!isRetryable(err)) throw err;
+    console.warn(`⚠️  reviewer call failed (${oneLine(err.message)}); retrying once in ${Math.round(RETRY_DELAY_MS / 1000)}s.`);
+    await new Promise((done) => setTimeout(done, RETRY_DELAY_MS));
+    attemptStarted = Date.now();
+    return { apiJson: await callModel(base, apiKey, payload), ms: Date.now() - attemptStarted };
+  }
 }
 
 async function main() {
@@ -445,9 +489,10 @@ async function main() {
   const payload = buildPayload({ systemPrompt: loadPrompt(), diff, model, openrouter });
 
   let apiJson;
+  let answeredMs;
   const started = Date.now();
   try {
-    apiJson = await callModel(base, apiKey, payload);
+    ({ apiJson, ms: answeredMs } = await callWithRetry(base, apiKey, payload));
   } catch (err) {
     if (err instanceof ModelUnavailableError) {
       console.error(`⚠️  REVIEWER MODEL UNAVAILABLE — '${model}' was rejected by OpenRouter (${err.message}).`);
@@ -456,12 +501,12 @@ async function main() {
       process.exit(0); // loud + surfaced on the PR, but advisory: a dead model must not block merges
     }
     // Reviewer unreachable — advisory mode must not wedge the pipeline.
-    console.warn(`⚠️  ADVISORY — logic reviewer could not reach the model after ${Math.round((Date.now() - started) / 1000)}s (${err.message}); skipping (not blocking).`);
+    console.warn(`⚠️  ADVISORY — logic reviewer could not reach the model after ${Math.round((Date.now() - started) / 1000)}s (${oneLine(err.message)}); skipping (not blocking).`);
     writeCommentFile(renderNotReviewed('the model could not be reached', err.message));
     process.exit(0);
   }
 
-  console.log(describeCall(apiJson, Date.now() - started)); // outside the try: a log failure isn't "unreachable"
+  console.log(describeCall(apiJson, answeredMs)); // outside the try: a log failure isn't "unreachable"
 
   let verdict;
   try {

@@ -26,6 +26,8 @@ permissions:
 jobs:
   logic-review:
     runs-on: ubuntu-latest
+    # Two 300s attempts plus the retry pause ≈ 10 min worst case; never more.
+    timeout-minutes: 15
     env:
       COMMENT_FILE: ${{ github.workspace }}/logic-review.md
     steps:

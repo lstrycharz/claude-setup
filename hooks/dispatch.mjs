@@ -12,6 +12,8 @@
  *   node dispatch.mjs bash        PreToolUse  → Bash
  *   node dispatch.mjs edit        PreToolUse  → Write|Edit|MultiEdit|NotebookEdit
  *   node dispatch.mjs post-bash   PostToolUse → Bash
+ *   node dispatch.mjs post-edit   PostToolUse → Write|Edit|MultiEdit|NotebookEdit
+ *   node dispatch.mjs agent       PreToolUse  → Agent|Task
  *
  * bash role:
  *   - no-verify guard: blocks hook-bypass attempts (--no-verify, commit's -n
@@ -19,6 +21,8 @@
  *     segments are stripped first so a command that merely MENTIONS a flag in
  *     a string is not blocked — false positives teach the agent to obfuscate.
  *     A speed bump against the lazy path, not a security boundary (#12).
+ *   - review-gate: blocks `git commit` once more than REVIEW_GATE_LINES code
+ *     lines were edited since the last code-reviewer pass (see agent role).
  *   - enforce-floor: blocks `git commit` in a code project with no wired floor.
  *     STATE-based: resolves the active hooks dir via `git rev-parse --git-path
  *     hooks` (so core.hooksPath can't fake it) and requires the exec bit (git
@@ -31,6 +35,14 @@
  *   - suggest-compact: counts edits per session; past a threshold, nudges to
  *     update PROGRESS.md then /clear (transitioning) or /compact (mid-task).
  *     Emitted as hook JSON output (systemMessage); never blocks.
+ *
+ * post-edit role:
+ *   - review-tally: adds a COMPLETED edit's changed lines to the session's
+ *     unreviewed-code tally (code files in code repos only); never blocks.
+ *     PostToolUse, so failed/denied attempts and their retries don't count.
+ *
+ * agent role:
+ *   - review-reset: starting the code-reviewer subagent clears the tally.
  *
  * post-bash role (#12 — the spelling-proof floor check):
  *   - commit-watchdog: after every Bash call, detects (via pure fs reads, no
@@ -157,7 +169,7 @@ const PROTECTED = new Set([
 // Path-based protection for the floor itself — basename matching isn't enough
 // here (verify.sh is only special inside .claude/, git hooks only inside .git/).
 const PROTECTED_PATHS =
-  /(^|[\\/])\.claude[\\/]verify\.(sh|allow-no-tests)$|(^|[\\/])\.git[\\/]hooks[\\/]/;
+  /(^|[\\/])\.claude[\\/]verify\.(sh|allow-no-tests)$|(^|[\\/])\.git[\\/]hooks[\\/]|[\\/]\.claude[\\/]metrics[\\/]\.review-/;
 
 function checkConfigProtection(input) {
   // Write/Edit/MultiEdit use file_path; NotebookEdit uses notebook_path.
@@ -166,7 +178,7 @@ function checkConfigProtection(input) {
   if (PROTECTED_PATHS.test(filePath)) {
     return (
       `BLOCKED: ${filePath} is part of the verification floor (verify.sh / pre-commit / ` +
-      `allow-no-tests). The floor is not agent-editable — if it genuinely needs to change, ` +
+      `allow-no-tests / the review-gate tally). The floor is not agent-editable — if it genuinely needs to change, ` +
       `ask the user to change it.\n`
     );
   }
@@ -191,7 +203,7 @@ function pruneOldCounters() {
   try {
     const now = Date.now();
     for (const f of readdirSync(METRICS_DIR)) {
-      if (!f.startsWith('.compact-counter-')) continue;
+      if (!f.startsWith('.compact-counter-') && !f.startsWith('.review-')) continue;
       const p = join(METRICS_DIR, f);
       try {
         if (now - statSync(p).mtimeMs > MAX_COUNTER_AGE_MS) unlinkSync(p);
@@ -321,18 +333,100 @@ function checkCommitWithoutFloor(input) {
   );
 }
 
+// ── review gate: the code-reviewer pass is enforced, not remembered ─────────
+// workflow.md makes a code-reviewer pass mandatory per chunk, yet it was the
+// one step left to the model's memory — and the reviewer that caught the real
+// bugs in practice. One tally per session (not per repo: `cd repo && git
+// commit` from another cwd must not dodge it). Starting the code-reviewer is
+// what resets it: a forcing function, not proof the review was any good.
+
+const REVIEW_GATE_LINES = 20;
+const NON_CODE_FILE = /\.(md|mdx|markdown|txt|rst)$/i;
+const CODE_REVIEWER = /(^|:)code-reviewer$/;
+
+function reviewTallyFile(input) {
+  const session = String(input?.session_id || process.env.CLAUDE_SESSION_ID || 'default')
+    .replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
+  return join(METRICS_DIR, `.review-${session}`);
+}
+
+function readTally(file) {
+  try {
+    const n = parseInt(readFileSync(file, 'utf8').trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch { return 0; }
+}
+
+// A trailing newline ends the last line; it doesn't start another.
+const countLines = (s) => (typeof s === 'string' && s ? s.split('\n').length - (s.endsWith('\n') ? 1 : 0) : 0);
+
+// Lines an edit touches: a replacement counts its larger side; a Write counts
+// the whole file (rewriting a file is as much to review as writing it).
+function changedLines(toolInput) {
+  if (Array.isArray(toolInput.edits)) {
+    return toolInput.edits.reduce((n, e) => n + Math.max(countLines(e.old_string), countLines(e.new_string)), 0);
+  }
+  if (typeof toolInput.content === 'string') return countLines(toolInput.content);
+  if (typeof toolInput.new_source === 'string') return countLines(toolInput.new_source);
+  return Math.max(countLines(toolInput.old_string), countLines(toolInput.new_string));
+}
+
+function tallyEdit(input) {
+  const toolInput = input?.tool_input || {};
+  const path = toolInput.file_path || toolInput.notebook_path;
+  if (!path || NON_CODE_FILE.test(path)) return null;
+  const abs = isAbsolute(path) ? path : resolve(input?.cwd || process.cwd(), path);
+  const found = findGitDir(dirname(abs));
+  if (!found || !MANIFESTS.some((m) => existsSync(join(found.repoRoot, m)))) return null; // not a code repo
+  const file = reviewTallyFile(input);
+  try {
+    mkdirSync(METRICS_DIR, { recursive: true });
+    writeFileSync(file, String(readTally(file) + changedLines(toolInput)));
+  } catch { /* ignore */ }
+  return null;
+}
+
+// Not atomic: an edit racing the reviewer's start can write the old tally back
+// after the reset. That over-blocks once (rerun the reviewer) — fails closed.
+function resetOnReview(input) {
+  if (!CODE_REVIEWER.test(String(input?.tool_input?.subagent_type || ''))) return null;
+  try { unlinkSync(reviewTallyFile(input)); } catch { /* nothing to reset */ }
+  return null;
+}
+
+function checkReviewGate(input) {
+  const command = input?.tool_input?.command || '';
+  if (!COMMIT_RE.test(stripQuotes(command))) return null;
+  // A commit into a manifest-less (docs) repo isn't gated by code edits made
+  // elsewhere — reviewing that docs diff would reset the tally and wave the real
+  // code through. Unless the command steers git elsewhere (cd / -C): that is how
+  // a session-wide tally would otherwise be dodged.
+  const here = findGitDir(input?.cwd || process.cwd());
+  const steersElsewhere = /(^|[\s;&|(])cd\s|\bgit\s+-C\b/.test(command);
+  if (here && !MANIFESTS.some((m) => existsSync(join(here.repoRoot, m))) && !steersElsewhere) return null;
+  const lines = readTally(reviewTallyFile(input));
+  if (lines <= REVIEW_GATE_LINES) return null;
+  return (
+    `BLOCKED: ${lines} lines of code changed since the last code-reviewer pass (gate: ${REVIEW_GATE_LINES}).\n` +
+    'Run the code-reviewer agent on this diff, fix what it finds, then commit. workflow.md makes ' +
+    'that pass mandatory per chunk; this hook enforces it. Docs-only and small edits are not gated.\n'
+  );
+}
+
 // ── dispatch ────────────────────────────────────────────────────────────────
 
 const ROLES = {
-  bash: { blockers: [checkNoVerify, checkFloor], advisory: [] },
+  bash: { blockers: [checkNoVerify, checkFloor, checkReviewGate], advisory: [] },
   edit: { blockers: [checkConfigProtection], advisory: [suggestCompact] },
   'post-bash': { blockers: [checkCommitWithoutFloor], advisory: [] },
+  'post-edit': { blockers: [], advisory: [tallyEdit] },
+  agent: { blockers: [], advisory: [resetOnReview] },
 };
 
 const role = ROLES[process.argv[2]];
 if (!role) {
   // Misconfigured wiring must be visible, but must not block the agent.
-  process.stderr.write(`dispatch.mjs: unknown role '${process.argv[2]}' (expected bash|edit|post-bash)\n`);
+  process.stderr.write(`dispatch.mjs: unknown role '${process.argv[2]}' (expected bash|edit|post-bash|post-edit|agent)\n`);
   process.exit(0);
 }
 
