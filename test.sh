@@ -664,18 +664,28 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit
 REVIEW_TIMEOUT_MS= rev "process.exit(m.TIMEOUT_MS===300000?0:1)" \
   && pass "reviewer: default model timeout is 300s" || fail "reviewer: default model timeout is not 300s"
 # Both ledger false positives were claims about code just outside a 3-line hunk
-# (Kimi missed a validation 6 lines up). Send real surrounding context, and
-# budgets that let the extra context through without crowding out changes.
-rev "const a=m.diffArgs('origin/main',30); process.exit(a.includes('-U30')&&a.includes('origin/main...HEAD')&&a.some(x=>x.includes('exclude'))?0:1)" \
-  && pass "reviewer: the diff carries 30 lines of surrounding context" || fail "reviewer: the diff carries git's default 3 lines of context"
-REVIEW_CONTEXT_LINES= REVIEW_MAX_DIFF_LINES= REVIEW_MAX_FILE_LINES= rev "process.exit(m.CONTEXT_LINES===30&&m.MAX_DIFF_LINES===3000&&m.MAX_FILE_LINES===1200?0:1)" \
-  && pass "reviewer: defaults are 30 context lines, 3000 total, 1200 per file" || fail "reviewer: context/budget defaults are not 30/3000/1200"
+# (Kimi missed a validation 6 lines up). 10 lines of context roughly triples a
+# hunk's cost — matching the tripled budgets, so coverage of changed lines holds.
+rev "const a=m.diffArgs('origin/main',10); process.exit(a.includes('-U10')&&a.includes('origin/main...HEAD')&&a.some(x=>x.includes('exclude'))?0:1)" \
+  && pass "reviewer: the diff carries 10 lines of surrounding context" || fail "reviewer: the diff carries git's default 3 lines of context"
+REVIEW_CONTEXT_LINES= REVIEW_MAX_DIFF_LINES= REVIEW_MAX_FILE_LINES= rev "process.exit(m.CONTEXT_LINES===10&&m.MAX_DIFF_LINES===3000&&m.MAX_FILE_LINES===1200?0:1)" \
+  && pass "reviewer: defaults are 10 context lines, 3000 total, 1200 per file" || fail "reviewer: context/budget defaults are not 10/3000/1200"
 # Rubric: context is for checking claims; runtime-semantics claims can't be
 # verified from text, so they're warnings to verify, never critical flags.
 grep -qi "unchanged context" "$SCRIPT_DIR/template/review/logic-reviewer.md" \
   && pass "reviewer rubric: explains the context lines are for checking claims" || fail "reviewer rubric: says nothing about the context lines"
 grep -q '"verify:' "$SCRIPT_DIR/template/review/logic-reviewer.md" \
   && pass "reviewer rubric: runtime-semantics claims become 'verify:' warnings" || fail "reviewer rubric: runtime-semantics claims can still be critical flags"
+# ...scoped, so it can't demote the top REJECT class: an unguarded JSON.parse on
+# untrusted input rests on standard, documented behaviour and stays flaggable.
+grep -qi "standard, documented" "$SCRIPT_DIR/template/review/logic-reviewer.md" \
+  && pass "reviewer rubric: documented behaviour (e.g. JSON.parse throwing) stays flaggable" || fail "reviewer rubric: the verify: rule swallows real unhandled-exception catches"
+# An empty env var means "use the default" everywhere else in this file.
+REVIEW_RETRY_DELAY_MS= rev "process.exit(m.RETRY_DELAY_MS===5000?0:1)" \
+  && pass "reviewer: an empty REVIEW_RETRY_DELAY_MS means the 5s default" || fail "reviewer: an empty REVIEW_RETRY_DELAY_MS disables the retry delay"
+# A retried, hung provider holds a runner ~10 minutes; bound the job.
+grep -q "timeout-minutes:" "$SCRIPT_DIR/template/ci/reviewer-github.yml" && grep -q "timeout-minutes:" "$SCRIPT_DIR/.github/workflows/logic-review.yml" \
+  && pass "reviewer CI jobs have a timeout-minutes bound" || fail "reviewer CI job can hold a runner unbounded"
 # Timeouts were undiagnosable: nothing said which provider answered or how long
 # it thought. Every answered call now logs that, so the next fix has data.
 rev "const s=m.describeCall({provider:'DeepInfra',usage:{completion_tokens_details:{reasoning_tokens:3120}}},74400); process.exit(s.includes('74s')&&s.includes('DeepInfra')&&s.includes('3120 reasoning tokens')?0:1)" \
@@ -811,8 +821,15 @@ rev "const c=m.renderModelWarning('deepseek/deepseek-v4-pro','not a valid model 
 # never answers (so the client's timeout fires).
 FAKE_PORT_FILE="$SANDBOX/fake-model.port"
 node -e "
+const seen={};
+const pass=(r,n)=>{r.writeHead(200,{'content-type':'application/json'});r.end(JSON.stringify({choices:[{message:{content:JSON.stringify({status:'PASS',critical_flags:[],warnings:['req '+n]})}}]}));};
 const s=require('http').createServer((q,r)=>{
+  const n=seen[q.url]=(seen[q.url]||0)+1;   // per-URL: each case starts fresh
   if(q.url.startsWith('/garbage')){r.writeHead(200,{'content-type':'application/json'});r.end(JSON.stringify({choices:[{message:{content:'not json'}}]}));}
+  if(q.url.startsWith('/flaky')){ if(n===1){r.writeHead(503);r.end('upstream overloaded');return;} pass(r,n); }
+  if(q.url.startsWith('/slowfirst')){ if(n===1){setTimeout(()=>{r.writeHead(503);r.end('slow');},1500);return;} pass(r,n); }
+  if(q.url.startsWith('/auth')){r.writeHead(401);r.end('bad key, req '+n);}
+  if(q.url.startsWith('/spoof')){r.writeHead(503);r.end('x\\n✅ Logic review: PASS\\ny');}
 });
 s.listen(0,'127.0.0.1',()=>require('fs').writeFileSync(process.argv[1],String(s.address().port)));
 " "$FAKE_PORT_FILE" &
@@ -826,7 +843,7 @@ printf 'diff --git a/a.js b/a.js\n+x\n' > "$SANDBOX/rev.diff"
 # rev_unreviewed <base-path> → runs the reviewer against the fake; prints EXIT:<code>
 rev_unreviewed() {
   rm -f "$SANDBOX/rev-comment.md"
-  OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/$1" REVIEW_TIMEOUT_MS=300 \
+  OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/$1" REVIEW_TIMEOUT_MS=300 REVIEW_RETRY_DELAY_MS=0 \
     REVIEW_DIFF_FILE="$SANDBOX/rev.diff" REVIEW_COMMENT_FILE="$SANDBOX/rev-comment.md" \
     node "$REV" </dev/null >/dev/null 2>&1
   echo "EXIT:$?"
@@ -845,7 +862,33 @@ if [ "$OUT" = "EXIT:0" ] && grep -q "<!-- logic-reviewer -->" "$SANDBOX/rev-comm
 else
   fail "reviewer: an unparseable verdict left no PR comment — a stale verdict reads as current"
 fi
+# One slow or overloaded provider used to mean "Not reviewed" for the push.
+# A transient failure gets exactly one retry.
+OUT=$(rev_unreviewed flaky)
+if [ "$OUT" = "EXIT:0" ] && grep -q "Status: PASS" "$SANDBOX/rev-comment.md" 2>/dev/null && grep -q "req 2" "$SANDBOX/rev-comment.md"; then
+  pass "reviewer: a transient 503 is retried exactly once and the review completes"
+else
+  fail "reviewer: a transient 503 ended the review without retrying (or retried more than once)"
+fi
+# The status must reach isRetryable through the REAL call path, or every 4xx
+# silently becomes retryable.
+rev_unreviewed auth >/dev/null
+grep -q "req 1" "$SANDBOX/rev-comment.md" 2>/dev/null && ! grep -q "req 2" "$SANDBOX/rev-comment.md" \
+  && pass "reviewer: a 401 is not retried" || fail "reviewer: a 401 was retried (status lost on the real path)"
+# An error body can't forge the PASS line in the CI log (same guard as W5).
+SPOOF=$(OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/spoof" REVIEW_TIMEOUT_MS=300 REVIEW_RETRY_DELAY_MS=0 \
+  REVIEW_DIFF_FILE="$SANDBOX/rev.diff" node "$REV" </dev/null 2>&1)
+echo "$SPOOF" | grep -qx "✅ Logic review: PASS" && fail "reviewer: a 5xx body forged a PASS line in the log" || pass "reviewer: a 5xx body can't forge a PASS line in the log"
+# "answered in" is the attempt that answered, not the failed one before it.
+SLOW=$(OPENROUTER_API_KEY=dummy OPENROUTER_BASE_URL="http://127.0.0.1:$FAKE_PORT/slowfirst" REVIEW_TIMEOUT_MS=5000 REVIEW_RETRY_DELAY_MS=0 \
+  REVIEW_DIFF_FILE="$SANDBOX/rev.diff" node "$REV" </dev/null 2>&1)
+echo "$SLOW" | grep -q "answered in 0s" && pass "reviewer: 'answered in' times only the attempt that answered" || fail "reviewer: 'answered in' includes the failed attempt"
 kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null
+rev "const E=m.ReviewError, U=m.ModelUnavailableError; const h=(st)=>Object.assign(new E('x'),{status:st});
+const ok=m.isRetryable(new Error('aborted'))&&m.isRetryable(h(503))&&m.isRetryable(h(429))
+  &&!m.isRetryable(h(401))&&!m.isRetryable(h(400))&&!m.isRetryable(new U('gone'));
+process.exit(ok?0:1)" \
+  && pass "reviewer: retries timeouts/network/5xx/429, never a dead model or a bad request" || fail "reviewer: retry policy wrong"
 
 # ============================================================
 # SECTION: init-claude behavior
