@@ -556,8 +556,12 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true
 # Throughput routing alone picked a provider that defaults reasoning OFF (#36:
 # "2s via Azure, 0 reasoning tokens") — faster because it stopped thinking.
 # Ask for reasoning explicitly instead of inheriting each provider's default.
-rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.reasoning?.enabled===true&&p.provider?.require_parameters===true?0:1)" \
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.reasoning?.enabled===true?0:1)" \
   && pass "reviewer: OpenRouter requests ask for reasoning explicitly" || fail "reviewer: reasoning left to each provider's default"
+# ...but must not REQUIRE it: the default model (deepseek/deepseek-chat) has no
+# provider that accepts `reasoning`, so require_parameters makes it unroutable.
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.provider?.require_parameters!==true?0:1)" \
+  && pass "reviewer: a model without reasoning support stays routable" || fail "reviewer: require_parameters makes non-reasoning models unroutable"
 rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit(p.provider===undefined&&p.reasoning===undefined?0:1)" \
   && pass "reviewer: non-OpenRouter endpoints get no provider/reasoning fields" || fail "reviewer: OpenRouter-only fields sent to another endpoint"
 # Successful code reviews already spent 70–90s in the model; 120s left no margin.
