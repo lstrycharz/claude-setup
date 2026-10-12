@@ -27,7 +27,9 @@
 //   OPENROUTER_BASE_URL    default https://openrouter.ai/api/v1  (swap for a
 //                          local Ollama/vLLM OpenAI-compatible endpoint)
 //   REVIEW_BASE_REF        default origin/main
-//   REVIEW_MAX_DIFF_LINES  default 1000 (cost/context cap)
+//   REVIEW_MAX_DIFF_LINES  default 3000 (cost/context cap)
+//   REVIEW_MAX_FILE_LINES  default 1200 (per-file cap)
+//   REVIEW_CONTEXT_LINES   default 30 (unchanged lines around each change)
 //   REVIEW_TIMEOUT_MS      default 300000
 //   REVIEW_DIFF_FILE       read the diff from a file instead of git (testing)
 //   LOGIC_REVIEWER_PROMPT  path to the system prompt (default: ../review/...)
@@ -45,8 +47,13 @@ export function numEnv(raw, fallback) {
   return Number.isInteger(n) && n >= 1 ? n : fallback;
 }
 
-const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 1000);
-const MAX_FILE_LINES = numEnv(process.env.REVIEW_MAX_FILE_LINES, 400);
+// git's default 3 lines of context left the reviewer guessing about code just
+// outside each hunk — both ledger false positives were exactly that. 30 lines
+// covers most enclosing logic; the budgets are sized so the extra context
+// doesn't crowd changed lines out of the review.
+export const CONTEXT_LINES = numEnv(process.env.REVIEW_CONTEXT_LINES, 30);
+export const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 3000);
+export const MAX_FILE_LINES = numEnv(process.env.REVIEW_MAX_FILE_LINES, 1200);
 export const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 300000);
 
 export class ReviewError extends Error {}
@@ -347,6 +354,14 @@ export function renderNotReviewed(reason, detail = '') {
   ].join('\n');
 }
 
+// The git diff invocation: base...HEAD with surrounding context, minus
+// lockfiles and build output.
+export function diffArgs(base, contextLines) {
+  return ['diff', `-U${contextLines}`, `${base}...HEAD`, '--', '.',
+    ':(exclude)*.lock', ':(exclude)*-lock.json',
+    ':(exclude)dist/*', ':(exclude)build/*'];
+}
+
 // ── IO shell (thin; not unit-tested) ────────────────────────────────────────
 
 function getDiff() {
@@ -357,13 +372,7 @@ function getDiff() {
   }
   const base = process.env.REVIEW_BASE_REF || 'origin/main';
   try {
-    return execFileSync(
-      'git',
-      ['diff', `${base}...HEAD`, '--', '.',
-        ':(exclude)*.lock', ':(exclude)*-lock.json',
-        ':(exclude)dist/*', ':(exclude)build/*'],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    );
+    return execFileSync('git', diffArgs(base, CONTEXT_LINES), { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   } catch (err) {
     // A git failure is NOT an empty diff. Swallowing it here used to print
     // "✅ No code changes to review" on a missing base ref / bad

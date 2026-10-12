@@ -663,6 +663,19 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit
 # Successful code reviews already spent 70–90s in the model; 120s left no margin.
 REVIEW_TIMEOUT_MS= rev "process.exit(m.TIMEOUT_MS===300000?0:1)" \
   && pass "reviewer: default model timeout is 300s" || fail "reviewer: default model timeout is not 300s"
+# Both ledger false positives were claims about code just outside a 3-line hunk
+# (Kimi missed a validation 6 lines up). Send real surrounding context, and
+# budgets that let the extra context through without crowding out changes.
+rev "const a=m.diffArgs('origin/main',30); process.exit(a.includes('-U30')&&a.includes('origin/main...HEAD')&&a.some(x=>x.includes('exclude'))?0:1)" \
+  && pass "reviewer: the diff carries 30 lines of surrounding context" || fail "reviewer: the diff carries git's default 3 lines of context"
+REVIEW_CONTEXT_LINES= REVIEW_MAX_DIFF_LINES= REVIEW_MAX_FILE_LINES= rev "process.exit(m.CONTEXT_LINES===30&&m.MAX_DIFF_LINES===3000&&m.MAX_FILE_LINES===1200?0:1)" \
+  && pass "reviewer: defaults are 30 context lines, 3000 total, 1200 per file" || fail "reviewer: context/budget defaults are not 30/3000/1200"
+# Rubric: context is for checking claims; runtime-semantics claims can't be
+# verified from text, so they're warnings to verify, never critical flags.
+grep -qi "unchanged context" "$SCRIPT_DIR/template/review/logic-reviewer.md" \
+  && pass "reviewer rubric: explains the context lines are for checking claims" || fail "reviewer rubric: says nothing about the context lines"
+grep -q '"verify:' "$SCRIPT_DIR/template/review/logic-reviewer.md" \
+  && pass "reviewer rubric: runtime-semantics claims become 'verify:' warnings" || fail "reviewer rubric: runtime-semantics claims can still be critical flags"
 # Timeouts were undiagnosable: nothing said which provider answered or how long
 # it thought. Every answered call now logs that, so the next fix has data.
 rev "const s=m.describeCall({provider:'DeepInfra',usage:{completion_tokens_details:{reasoning_tokens:3120}}},74400); process.exit(s.includes('74s')&&s.includes('DeepInfra')&&s.includes('3120 reasoning tokens')?0:1)" \
