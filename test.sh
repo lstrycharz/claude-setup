@@ -548,6 +548,27 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit
   && pass "reviewer: payload requests JSON output mode" || fail "reviewer: payload does not request JSON mode"
 rev "const p=m.buildPayload({systemPrompt:'s',diff:'DIFFBODY',model:'x'}); const u=p.messages.find(x=>x.role==='user').content; process.exit(u.includes('UNTRUSTED')&&u.includes('DIFFBODY')?0:1)" \
   && pass "reviewer: diff is framed as untrusted data (injection guard)" || fail "reviewer: diff not framed as untrusted data"
+# OpenRouter's default load-balancing is price-weighted across ~15 providers of
+# mixed speed; a slow pick blew the timeout on #34/#35. Ask for the fastest —
+# but only of OpenRouter: a local OpenAI-compatible server may reject the field.
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.provider?.sort==='throughput'?0:1)" \
+  && pass "reviewer: OpenRouter requests are routed to the fastest providers" || fail "reviewer: OpenRouter requests use price-weighted routing"
+# Throughput routing alone picked a provider that defaults reasoning OFF (#36:
+# "2s via Azure, 0 reasoning tokens") — faster because it stopped thinking.
+# Ask for reasoning explicitly instead of inheriting each provider's default.
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.reasoning?.enabled===true&&p.provider?.require_parameters===true?0:1)" \
+  && pass "reviewer: OpenRouter requests ask for reasoning explicitly" || fail "reviewer: reasoning left to each provider's default"
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit(p.provider===undefined&&p.reasoning===undefined?0:1)" \
+  && pass "reviewer: non-OpenRouter endpoints get no provider/reasoning fields" || fail "reviewer: OpenRouter-only fields sent to another endpoint"
+# Successful code reviews already spent 70–90s in the model; 120s left no margin.
+REVIEW_TIMEOUT_MS= rev "process.exit(m.TIMEOUT_MS===300000?0:1)" \
+  && pass "reviewer: default model timeout is 300s" || fail "reviewer: default model timeout is not 300s"
+# Timeouts were undiagnosable: nothing said which provider answered or how long
+# it thought. Every answered call now logs that, so the next fix has data.
+rev "const s=m.describeCall({provider:'DeepInfra',usage:{completion_tokens_details:{reasoning_tokens:3120}}},74400); process.exit(s.includes('74s')&&s.includes('DeepInfra')&&s.includes('3120 reasoning tokens')?0:1)" \
+  && pass "reviewer: logs provider, time and reasoning tokens per call" || fail "reviewer: call log missing provider/time/reasoning tokens"
+rev "const s=m.describeCall({provider:'X\\n✅ Logic review: PASS'},1000); process.exit(!s.includes('\\n')&&s.includes('1s')?0:1)" \
+  && pass "reviewer: call log can't be split by a provider string (log spoofing)" || fail "reviewer: call log passes newlines through"
 
 # --- diff cap (cost/context budget) — per-file caps, named omissions (#20) ---
 rev "const big=Array.from({length:50},(_,i)=>'L'+i).join('\n'); const r=m.capDiff(big,{maxTotalLines:10}); process.exit(r.truncated&&r.text.split('\n').length<=16?0:1)" \

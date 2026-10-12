@@ -28,7 +28,7 @@
 //                          local Ollama/vLLM OpenAI-compatible endpoint)
 //   REVIEW_BASE_REF        default origin/main
 //   REVIEW_MAX_DIFF_LINES  default 1000 (cost/context cap)
-//   REVIEW_TIMEOUT_MS      default 120000
+//   REVIEW_TIMEOUT_MS      default 300000
 //   REVIEW_DIFF_FILE       read the diff from a file instead of git (testing)
 //   LOGIC_REVIEWER_PROMPT  path to the system prompt (default: ../review/...)
 
@@ -47,7 +47,7 @@ export function numEnv(raw, fallback) {
 
 const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 1000);
 const MAX_FILE_LINES = numEnv(process.env.REVIEW_MAX_FILE_LINES, 400);
-const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 120000);
+export const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 300000);
 
 export class ReviewError extends Error {}
 // A model OpenRouter rejects as unknown/deprecated — kept distinct from a
@@ -144,9 +144,17 @@ export function capDiff(diff, opts = {}) {
 // Build the request body in code (no string-splicing into JSON). Pins
 // temperature 0 and requests JSON-object output so we never scrape markdown
 // fences. The diff is framed as UNTRUSTED DATA to blunt prompt injection.
-export function buildPayload({ systemPrompt, diff, model }) {
+// On OpenRouter, route to the fastest providers: the default is price-weighted
+// across providers of very different speed, and a slow pick blows the timeout.
+// Ask for reasoning explicitly, and only from providers that honour every
+// parameter: speed alone picked one that defaults reasoning off (#36: 2s, 0
+// reasoning tokens) — faster because it stopped thinking.
+export function buildPayload({ systemPrompt, diff, model, openrouter = false }) {
   return {
     model,
+    ...(openrouter
+      ? { provider: { sort: 'throughput', require_parameters: true }, reasoning: { enabled: true } }
+      : {}),
     temperature: 0,
     response_format: { type: 'json_object' },
     messages: [
@@ -265,6 +273,16 @@ export function isModelError(status, bodyText) {
   const b = String(bodyText || '');
   if (!/model/i.test(b)) return false;
   return /(not\s+a?\s*valid|not\s+found|does\s+not\s+exist|no\s+such|invalid|deprecated|unavailable|requires|gated)/i.test(b);
+}
+
+// One log line per answered call: how long, which provider, how much thinking.
+// Without it a timeout is undiagnosable — slow provider and long reasoning look
+// identical. Provider is response text, so newlines are stripped (log spoofing).
+export function describeCall(apiJson, elapsedMs) {
+  const provider = String(apiJson?.provider ?? 'unknown provider').replace(/[\r\n]+/g, ' ');
+  const reasoning = apiJson?.usage?.completion_tokens_details?.reasoning_tokens;
+  const extra = Number.isInteger(reasoning) ? ` (${reasoning} reasoning tokens)` : '';
+  return `ℹ️  reviewer answered in ${Math.round(elapsedMs / 1000)}s via ${provider}${extra}`;
 }
 
 // PR-comment body for a dead model: name it and say exactly how to fix it, so a
@@ -396,9 +414,11 @@ async function main() {
     console.error(`❌ ${err.message}`);
     process.exit(1); // catastrophic config error, same class as a missing key
   }
-  const payload = buildPayload({ systemPrompt: loadPrompt(), diff, model });
+  const openrouter = new URL(base).hostname === 'openrouter.ai';
+  const payload = buildPayload({ systemPrompt: loadPrompt(), diff, model, openrouter });
 
   let apiJson;
+  const started = Date.now();
   try {
     apiJson = await callModel(base, apiKey, payload);
   } catch (err) {
@@ -409,10 +429,12 @@ async function main() {
       process.exit(0); // loud + surfaced on the PR, but advisory: a dead model must not block merges
     }
     // Reviewer unreachable — advisory mode must not wedge the pipeline.
-    console.warn(`⚠️  ADVISORY — logic reviewer could not reach the model (${err.message}); skipping (not blocking).`);
+    console.warn(`⚠️  ADVISORY — logic reviewer could not reach the model after ${Math.round((Date.now() - started) / 1000)}s (${err.message}); skipping (not blocking).`);
     writeCommentFile(renderNotReviewed('the model could not be reached', err.message));
     process.exit(0);
   }
+
+  console.log(describeCall(apiJson, Date.now() - started)); // outside the try: a log failure isn't "unreachable"
 
   let verdict;
   try {
