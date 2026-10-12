@@ -23,7 +23,7 @@
 //
 // Env:
 //   OPENROUTER_API_KEY     required (catastrophic if missing)
-//   LOGIC_REVIEWER_MODEL   default deepseek/deepseek-chat (cross-vendor vs Claude)
+//   LOGIC_REVIEWER_MODEL   default deepseek/deepseek-v4-pro (cross-vendor vs Claude)
 //   OPENROUTER_BASE_URL    default https://openrouter.ai/api/v1  (swap for a
 //                          local Ollama/vLLM OpenAI-compatible endpoint)
 //   REVIEW_BASE_REF        default origin/main
@@ -56,6 +56,14 @@ export function numEnv(raw, fallback) {
 export const CONTEXT_LINES = numEnv(process.env.REVIEW_CONTEXT_LINES, 10);
 export const MAX_DIFF_LINES = numEnv(process.env.REVIEW_MAX_DIFF_LINES, 3000);
 export const MAX_FILE_LINES = numEnv(process.env.REVIEW_MAX_FILE_LINES, 1200);
+// The fallback is the model actually exercised in CI (a reasoning model; 5–59s
+// per review), not the older non-reasoning deepseek-chat that no run had tested.
+// Blank means unset: GitHub passes an unset repository variable as "".
+export const DEFAULT_MODEL = 'deepseek/deepseek-v4-pro';
+export function reviewerModel(raw) {
+  return String(raw ?? '').trim() || DEFAULT_MODEL;
+}
+
 export const TIMEOUT_MS = numEnv(process.env.REVIEW_TIMEOUT_MS, 300000);
 // Like numEnv, but 0 is allowed (tests); unset, empty or garbage → default.
 const rawRetryDelay = String(process.env.REVIEW_RETRY_DELAY_MS ?? '').trim();
@@ -161,8 +169,8 @@ export function capDiff(diff, opts = {}) {
 // across providers of very different speed, and a slow pick blows the timeout.
 // Ask for reasoning explicitly: speed alone picked a provider that defaults it
 // off (#36: 2s, 0 reasoning tokens) — faster because it stopped thinking. Don't
-// set require_parameters: the default model has no provider that accepts
-// `reasoning`, so requiring it would make every request unroutable. Models
+// set require_parameters: some models (e.g. deepseek/deepseek-chat) have no
+// provider that accepts `reasoning`, so requiring it makes them unroutable. Models
 // that can't reason just ignore it; describeCall logs the reasoning tokens.
 export function buildPayload({ systemPrompt, diff, model, openrouter = false }) {
   return {
@@ -477,7 +485,7 @@ async function main() {
     if (skippedFiles.length) console.log(`   NOT reviewed: ${skippedFiles.join(', ')}`);
   }
 
-  const model = process.env.LOGIC_REVIEWER_MODEL || 'deepseek/deepseek-chat';
+  const model = reviewerModel(process.env.LOGIC_REVIEWER_MODEL);
   let base;
   try {
     base = validateBaseUrl(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1');

@@ -85,7 +85,7 @@ It is **advisory** — it posts its findings as a comment on the PR and **never 
 1. **Get an OpenRouter key.** Sign up at [openrouter.ai](https://openrouter.ai), add a little credit, and create an API key. (OpenRouter is one gateway to many models — Claude, GPT, Gemini, DeepSeek — so you can switch models without changing code.)
 2. **Add the workflow.** Copy `.claude/ci/reviewer-github.yml` into your repo's `.github/workflows/` folder and commit it.
 3. **Add the key as a secret.** In GitHub: **your repo → Settings → Secrets and variables → Actions → New repository secret**. Name it exactly `OPENROUTER_API_KEY` and paste your key. It must be a **repository** secret — *not* an Environment secret (the workflow won't see an environment secret).
-4. **(Optional) pick the model.** The default is `deepseek/deepseek-chat` (cheap and solid for a second opinion). To use another, add a repository **variable** (same screen → *Variables* tab) named `LOGIC_REVIEWER_MODEL` — e.g. `google/gemini-2.5-pro`, `openai/gpt-5`, `anthropic/claude-sonnet-5`. Any ID from [openrouter.ai/models](https://openrouter.ai/models) works.
+4. **(Optional) pick the model.** The default is `deepseek/deepseek-v4-pro`, a reasoning model that works each review through before answering (a few cents per review). To use another, add a repository **variable** (same screen → *Variables* tab) named `LOGIC_REVIEWER_MODEL` — e.g. `google/gemini-2.5-pro`, `openai/gpt-5`, `anthropic/claude-sonnet-5`. Any ID from [openrouter.ai/models](https://openrouter.ai/models) works.
 
 Open a pull request and the reviewer posts its findings as a comment. If the model you picked is ever retired, it says so on the PR instead of failing silently.
 

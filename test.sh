@@ -654,7 +654,7 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true
 # Ask for reasoning explicitly instead of inheriting each provider's default.
 rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.reasoning?.enabled===true?0:1)" \
   && pass "reviewer: OpenRouter requests ask for reasoning explicitly" || fail "reviewer: reasoning left to each provider's default"
-# ...but must not REQUIRE it: the default model (deepseek/deepseek-chat) has no
+# ...but must not REQUIRE it: some models (e.g. deepseek/deepseek-chat) have no
 # provider that accepts `reasoning`, so require_parameters makes it unroutable.
 rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.provider?.require_parameters!==true?0:1)" \
   && pass "reviewer: a model without reasoning support stays routable" || fail "reviewer: require_parameters makes non-reasoning models unroutable"
@@ -663,6 +663,15 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit
 # Successful code reviews already spent 70–90s in the model; 120s left no margin.
 REVIEW_TIMEOUT_MS= rev "process.exit(m.TIMEOUT_MS===300000?0:1)" \
   && pass "reviewer: default model timeout is 300s" || fail "reviewer: default model timeout is not 300s"
+# The fallback is the model actually exercised in CI (reasoning on, 5–59s), not
+# the older non-reasoning deepseek-chat no run had tested. Blank means unset:
+# the GitHub workflow passes an unset repository variable through as "".
+rev "process.exit(m.reviewerModel(undefined)==='deepseek/deepseek-v4-pro'&&m.reviewerModel('  ')==='deepseek/deepseek-v4-pro'&&m.reviewerModel('x/y')==='x/y'&&m.reviewerModel(' x/y ')==='x/y'?0:1)" \
+  && pass "reviewer: falls back to deepseek-v4-pro when no model is set (blank = unset)" || fail "reviewer: fallback model is not deepseek-v4-pro, or blank isn't treated as unset"
+# README step 4 says a repository variable picks the model — the workflow must
+# actually read it, or the setting silently does nothing.
+grep -q 'LOGIC_REVIEWER_MODEL: ${{ vars.LOGIC_REVIEWER_MODEL }}' "$SCRIPT_DIR/template/ci/reviewer-github.yml" \
+  && pass "reviewer workflow reads the LOGIC_REVIEWER_MODEL repository variable" || fail "reviewer workflow ignores the LOGIC_REVIEWER_MODEL variable the README tells you to set"
 # Both ledger false positives were claims about code just outside a 3-line hunk
 # (Kimi missed a validation 6 lines up). 10 lines of context roughly triples a
 # hunk's cost — matching the tripled budgets, so coverage of changed lines holds.
