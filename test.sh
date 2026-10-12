@@ -553,8 +553,13 @@ rev "const p=m.buildPayload({systemPrompt:'s',diff:'DIFFBODY',model:'x'}); const
 # but only of OpenRouter: a local OpenAI-compatible server may reject the field.
 rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.provider?.sort==='throughput'?0:1)" \
   && pass "reviewer: OpenRouter requests are routed to the fastest providers" || fail "reviewer: OpenRouter requests use price-weighted routing"
-rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit(p.provider===undefined?0:1)" \
-  && pass "reviewer: non-OpenRouter endpoints get no provider field" || fail "reviewer: provider field sent to a non-OpenRouter endpoint"
+# Throughput routing alone picked a provider that defaults reasoning OFF (#36:
+# "2s via Azure, 0 reasoning tokens") — faster because it stopped thinking.
+# Ask for reasoning explicitly instead of inheriting each provider's default.
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x',openrouter:true}); process.exit(p.reasoning?.enabled===true&&p.provider?.require_parameters===true?0:1)" \
+  && pass "reviewer: OpenRouter requests ask for reasoning explicitly" || fail "reviewer: reasoning left to each provider's default"
+rev "const p=m.buildPayload({systemPrompt:'s',diff:'d',model:'x'}); process.exit(p.provider===undefined&&p.reasoning===undefined?0:1)" \
+  && pass "reviewer: non-OpenRouter endpoints get no provider/reasoning fields" || fail "reviewer: OpenRouter-only fields sent to another endpoint"
 # Successful code reviews already spent 70–90s in the model; 120s left no margin.
 REVIEW_TIMEOUT_MS= rev "process.exit(m.TIMEOUT_MS===300000?0:1)" \
   && pass "reviewer: default model timeout is 300s" || fail "reviewer: default model timeout is not 300s"
