@@ -20,17 +20,89 @@ else
   exit 1
 fi
 
-if [ -d ".claude" ]; then
-  echo "⚠️  .claude/ already exists."
-  echo "   To re-scaffold: remove .claude/ first (back up CLAUDE.md and PROGRESS.md if needed)."
-  echo "   To update only global rules/hooks/commands/agents: re-run ./install.sh from claude-setup."
+# A `.claude/` can exist in a project that was NEVER scaffolded: the Claude Code
+# app creates `.claude/.cc-writes/` to track its own file writes, and writes
+# `.claude/settings.local.json` the first time you approve a permission with
+# "don't ask again". So the folder is present in anything a session has been
+# open in. Refusing on bare existence broke the documented path outright —
+# `/init-floor` is a slash command, so a session has to be open in the project,
+# which is the very thing that creates those.
+#
+# Two classes of pre-existing file, treated differently:
+#   USER-OWNED (machine-local, gitignored by our own .claude/.gitignore):
+#     never overwritten, never a reason to refuse — kept as they are.
+#   EVERYTHING ELSE the template ships: a clash means this project is already
+#     scaffolded, so refuse and name the files rather than overwrite them.
+USER_OWNED="settings.local.json CLAUDE.local.md"
+is_user_owned() { case " $USER_OWNED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# `.claude` must be a directory if it exists at all.
+if [ -e ".claude" ] && [ ! -d ".claude" ]; then
+  echo "❌ .claude exists but is not a directory — move it aside and re-run."
   exit 1
 fi
 
-cp -r "$TEMPLATE" .claude
+if [ -d ".claude" ]; then
+  clashes=""
+  # Files the template would write.
+  while IFS= read -r rel; do
+    if [ -e ".claude/$rel" ] && ! is_user_owned "$rel"; then
+      clashes="$clashes      $rel
+"
+    fi
+  done < <(cd "$TEMPLATE" && find . -type f | sed 's|^\./||' | sort)
+  # dot-gitignore lands as .claude/.gitignore, so that name is a clash too.
+  if [ -f "$TEMPLATE/dot-gitignore" ] && [ -e ".claude/.gitignore" ]; then
+    clashes="$clashes      .gitignore
+"
+  fi
+  # A plain FILE where the template needs a directory would make cp fail
+  # per-file while the script marched on to report success.
+  while IFS= read -r rel; do
+    if [ -e ".claude/$rel" ] && [ ! -d ".claude/$rel" ]; then
+      clashes="$clashes      $rel (expected a directory)
+"
+    fi
+  done < <(cd "$TEMPLATE" && find . -mindepth 1 -type d | sed 's|^\./||' | sort)
+
+  if [ -n "$clashes" ]; then
+    echo "⚠️  These files already exist in .claude/ and would be overwritten:"
+    printf '%s' "$clashes"
+    echo "   To refresh the infrastructure in place:  update-claude   (or /update-floor)"
+    echo "   To re-scaffold from scratch: remove .claude/ first (back up CLAUDE.md and PROGRESS.md)."
+    exit 1
+  fi
+  echo "ℹ️  .claude/ exists but holds no scaffolding (e.g. only the app's own files) — scaffolding into it."
+fi
+
+mkdir -p .claude
+# "$TEMPLATE/." (not "$TEMPLATE") so the CONTENTS merge into an existing
+# .claude/; `cp -r "$TEMPLATE" .claude` would nest a whole copy of the template
+# inside it. -n never clobbers, so a user-owned file already there survives.
+cp -Rn "$TEMPLATE/." .claude/ 2>/dev/null
+# Do NOT trust cp's exit status here: with -n, BSD cp exits 1 merely because it
+# SKIPPED an existing file. Assert the post-condition instead — every file the
+# template ships is now present — so a partial copy can never report success.
+missing=""
+while IFS= read -r rel; do
+  [ -e ".claude/$rel" ] || missing="$missing      $rel
+"
+done < <(cd "$TEMPLATE" && find . -type f | sed 's|^\./||' | sort)
+if [ -n "$missing" ]; then
+  echo "❌ Scaffold incomplete — these template files did not land in .claude/:"
+  printf '%s' "$missing"
+  echo "   .claude/ is partially scaffolded; fix the cause and re-run."
+  exit 1
+fi
 # In the repo/plugin the .claude-internal gitignore is stored as dot-gitignore
 # (a literal .gitignore would make git ignore template files). Restore its name.
-[ -f .claude/dot-gitignore ] && mv .claude/dot-gitignore .claude/.gitignore
+# The guard above already refused if .claude/.gitignore pre-existed, so this
+# rename cannot clobber one; the rm arm is belt-and-braces only.
+if [ -f .claude/dot-gitignore ]; then
+  if [ -e .claude/.gitignore ]; then rm -f .claude/dot-gitignore
+  else mv .claude/dot-gitignore .claude/.gitignore
+  fi
+fi
 
 # Add project-root .gitignore if none exists
 if [ ! -f ".gitignore" ]; then

@@ -771,6 +771,116 @@ else
 fi
 
 # ============================================================
+# SECTION: init-claude scaffolds into an app-created .claude/
+# ============================================================
+# The Claude Code app creates .claude/.cc-writes/ to track its own file writes,
+# so .claude/ exists in ANY folder a session has been open in. A bare
+# directory-existence check therefore refused to scaffold a brand-new project —
+# and broke the documented path exactly: /init-floor is a slash command, so a
+# session must be open in the project, which is what creates .cc-writes.
+section "init-claude scaffolds into an app-created .claude/"
+
+CCW="$SANDBOX/proj-ccwrites"
+rm -rf "$CCW"; mkdir -p "$CCW/.claude/.cc-writes"
+( cd "$CCW" && git init -q && git config user.email t@e.com && git config user.name T ) || fail "ccwrites fixture setup failed"
+printf '[project]\nname = "x"\n' > "$CCW/pyproject.toml"
+if ( cd "$CCW" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-ccwrites.log 2>&1; then
+  pass "init-claude scaffolds when .claude/ holds only the app's .cc-writes/"
+else
+  fail "init-claude refused a project whose .claude/ holds only .cc-writes/"
+fi
+[ -f "$CCW/.claude/CLAUDE.md" ] && pass "  -> CLAUDE.md scaffolded into the existing .claude/" || fail "  -> CLAUDE.md missing"
+[ -f "$CCW/.claude/verify.sh" ] && pass "  -> verify.sh scaffolded into the existing .claude/" || fail "  -> verify.sh missing"
+[ -d "$CCW/.claude/.cc-writes" ] && pass "  -> the app's .cc-writes/ left intact" || fail "  -> .cc-writes/ was destroyed"
+# `cp -r "$TEMPLATE" .claude` NESTS the template when .claude/ already exists.
+ls -d "$CCW"/.claude/*template* >/dev/null 2>&1 && fail "  -> template nested inside .claude/ instead of merged" || pass "  -> template contents merged, not nested"
+[ -f "$CCW/.claude/.gitignore" ] && pass "  -> dot-gitignore renamed to .gitignore" || fail "  -> .claude/.gitignore missing"
+[ -x "$CCW/.git/hooks/pre-commit" ] && pass "  -> pre-commit hook installed" || fail "  -> pre-commit hook missing"
+[ -x "$CCW/.git/hooks/pre-push" ] && pass "  -> pre-push hook installed" || fail "  -> pre-push hook missing"
+
+# Regression: a REAL scaffold must still be refused, and must say what clashes.
+SCAF="$SANDBOX/proj-scaffolded"
+rm -rf "$SCAF"; mkdir -p "$SCAF/.claude"
+printf '# my customised instructions\n' > "$SCAF/.claude/CLAUDE.md"
+( cd "$SCAF" && git init -q ) || fail "scaffolded fixture setup failed"
+if ( cd "$SCAF" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-scaffolded.log 2>&1; then
+  fail "init-claude overwrote an existing scaffold"
+else
+  pass "init-claude still refuses a real scaffold (CLAUDE.md present)"
+fi
+grep -q "would be overwritten" "$LOGS"/init-scaffolded.log && grep -qE "^ +CLAUDE\.md$" "$LOGS"/init-scaffolded.log \
+  && pass "  -> refusal lists CLAUDE.md as the clash (not just a passing mention)" \
+  || fail "  -> refusal did not list the clashing file"
+grep -q "update-claude" "$LOGS"/init-scaffolded.log && pass "  -> refusal points at update-claude" || fail "  -> refusal gave no path forward"
+grep -q "customised" "$SCAF/.claude/CLAUDE.md" && pass "  -> the user's CLAUDE.md is untouched" || fail "  -> the user's CLAUDE.md was modified"
+
+# W1: the app also writes settings.local.json (first "don't ask again"). That is
+# USER-OWNED and gitignored by our own .claude/.gitignore — it must NOT block
+# scaffolding, and must NOT be overwritten.
+LOCAL="$SANDBOX/proj-settingslocal"
+rm -rf "$LOCAL"; mkdir -p "$LOCAL/.claude/.cc-writes"
+printf '{ "permissions": { "allow": ["Bash(mine)"] } }\n' > "$LOCAL/.claude/settings.local.json"
+printf '# my personal notes\n' > "$LOCAL/.claude/CLAUDE.local.md"
+( cd "$LOCAL" && git init -q ) || fail "settings.local fixture setup failed"
+printf '[project]\nname = "x"\n' > "$LOCAL/pyproject.toml"
+if ( cd "$LOCAL" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-local.log 2>&1; then
+  pass "init-claude scaffolds despite an app-written settings.local.json"
+else
+  fail "init-claude refused because of settings.local.json (user-owned, should not block)"
+fi
+grep -q "Bash(mine)" "$LOCAL/.claude/settings.local.json" && pass "  -> the user's settings.local.json is preserved" || fail "  -> settings.local.json was overwritten"
+grep -q "personal notes" "$LOCAL/.claude/CLAUDE.local.md" && pass "  -> the user's CLAUDE.local.md is preserved" || fail "  -> CLAUDE.local.md was overwritten"
+[ -f "$LOCAL/.claude/verify.sh" ] && pass "  -> the rest of the scaffold still landed" || fail "  -> scaffold incomplete"
+
+# W3: a clash inside a template SUBDIRECTORY must refuse, not silently merge.
+SUBC="$SANDBOX/proj-subclash"
+rm -rf "$SUBC"; mkdir -p "$SUBC/.claude/ci"
+printf 'my pipeline\n' > "$SUBC/.claude/ci/github-actions.yml"
+( cd "$SUBC" && git init -q ) || fail "subclash fixture setup failed"
+if ( cd "$SUBC" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-subclash.log 2>&1; then
+  fail "init-claude overwrote a file inside .claude/ci/"
+else
+  pass "init-claude refuses a clash inside a template subdirectory"
+fi
+grep -q "my pipeline" "$SUBC/.claude/ci/github-actions.yml" && pass "  -> the user's ci file is untouched" || fail "  -> the user's ci file was overwritten"
+
+# W3: a pre-existing .claude/.gitignore (the dot-gitignore rename target).
+GIC="$SANDBOX/proj-gitignoreclash"
+rm -rf "$GIC"; mkdir -p "$GIC/.claude"
+printf 'mine\n' > "$GIC/.claude/.gitignore"
+( cd "$GIC" && git init -q ) || fail "gitignore fixture setup failed"
+if ( cd "$GIC" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-gic.log 2>&1; then
+  fail "init-claude clobbered an existing .claude/.gitignore"
+else
+  pass "init-claude refuses when .claude/.gitignore already exists"
+fi
+grep -q "mine" "$GIC/.claude/.gitignore" && pass "  -> the user's .claude/.gitignore is untouched" || fail "  -> it was overwritten"
+
+# W2: a plain FILE where the template needs a directory used to pass the guard,
+# make cp fail per-file, and still report success.
+DVF="$SANDBOX/proj-dirvsfile"
+rm -rf "$DVF"; mkdir -p "$DVF/.claude"
+printf 'not a directory\n' > "$DVF/.claude/ci"
+( cd "$DVF" && git init -q ) || fail "dirvsfile fixture setup failed"
+if ( cd "$DVF" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-dvf.log 2>&1; then
+  fail "init-claude reported success with a file blocking .claude/ci/"
+else
+  pass "init-claude refuses a file where a template directory must go"
+fi
+
+# W2: .claude itself as a regular file must be refused, not reported scaffolded.
+CFILE="$SANDBOX/proj-claudeisfile"
+rm -rf "$CFILE"; mkdir -p "$CFILE"; printf 'oops\n' > "$CFILE/.claude"
+( cd "$CFILE" && git init -q ) || fail "claude-is-file fixture setup failed"
+if ( cd "$CFILE" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-cfile.log 2>&1; then
+  fail "init-claude reported success when .claude is a regular file"
+else
+  pass "init-claude refuses when .claude is a regular file"
+fi
+
+cd "$SANDBOX"
+
+# ============================================================
 # SECTION: update-claude (upgrade an existing project)
 # ============================================================
 # Updates the infrastructure files (reviewer code/prompt, ci, configs) in place,
