@@ -188,6 +188,23 @@ in Claude Code — not a terminal command):
 (Prefer the terminal? The same scaffolder is `bin/init-claude` in the plugin —
 `/init-floor` just runs it for you.)
 
+**You will probably see this, and it is fine:**
+
+```
+ℹ️  .claude/ exists but holds no scaffolding (e.g. only the app's own files) — scaffolding into it.
+```
+
+The Claude Code app creates `.claude/` on its own — `.cc-writes/` in any folder a
+session has been open in, and `settings.local.json` the first time you approve a
+permission with "don't ask again". So `.claude/` almost always exists *before*
+you scaffold. The scaffolder merges into it, leaves those files alone, and never
+overwrites `settings.local.json` or `CLAUDE.local.md` (both are yours, and both
+are gitignored by the `.claude/.gitignore` it installs).
+
+If instead it **refuses** and lists files, the project is genuinely already
+scaffolded — run `/update-floor` to refresh the infrastructure in place rather
+than deleting anything.
+
 ### Step 3: Start working
 
 Open Claude Code and enter plan mode. On your first planning session, Claude will automatically fill in your project's `CLAUDE.md` with the tech stack, commands, and project structure you discussed. You review it, confirm, and you're set.
