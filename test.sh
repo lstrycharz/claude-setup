@@ -91,6 +91,11 @@ grep -qiE 'python|uv|poetry' "$SCRIPT_DIR/template/ci/bitbucket-pipelines.yml" &
 [ -f "$SCRIPT_DIR/commands/logic-review.md" ] && pass "commands/logic-review.md installed" || fail "commands/logic-review.md missing"
 [ -f "$SCRIPT_DIR/agents/code-reviewer.md" ] && pass "agents/code-reviewer.md installed" || fail "agents/code-reviewer.md missing"
 [ -f "$SCRIPT_DIR/agents/security-reviewer.md" ] && pass "agents/security-reviewer.md installed" || fail "agents/security-reviewer.md missing"
+# The reviewers track the newest Fable via the family alias instead of a pinned
+# ID that silently goes stale when a new version ships.
+for a in code-reviewer security-reviewer; do
+  grep -qx 'model: fable' "$SCRIPT_DIR/agents/$a.md" && pass "$a runs on the newest Fable (model: fable)" || fail "$a pins a fixed model instead of the fable alias"
+done
 [ -x "$SCRIPT_DIR/bin/init-claude" ] && pass "bin/init-claude present and executable" || fail "bin/init-claude missing or not executable"
 [ -x "$SCRIPT_DIR/bin/update-claude" ] && pass "bin/update-claude present and executable" || fail "bin/update-claude missing or not executable"
 
