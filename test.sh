@@ -275,6 +275,97 @@ OUT=$(post_event | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash 2>/dev/null; 
 echo "$OUT" | grep -q "EXIT:0" && pass "watchdog: silent when the floor is wired" || fail "watchdog flagged despite a wired floor"
 
 # ============================================================
+# SECTION: review gate — the code-reviewer pass is enforced, not remembered
+# ============================================================
+# workflow.md makes a code-reviewer pass mandatory per chunk, but nothing
+# enforced it: the review that caught every real bug in practice was the one
+# step left to the model's memory. Edits tally changed code lines per session
+# and repo; starting the code-reviewer resets the tally; a commit over the gate
+# is blocked.
+section "review gate"
+
+RG="$SANDBOX/rg-repo"; mkdir -p "$RG/src"; ( cd "$RG" && git init -q && echo '{}' > package.json )
+touch "$RG/.git/hooks/pre-commit"; chmod +x "$RG/.git/hooks/pre-commit"   # floor wired: only the gate decides
+RG_DOCS="$SANDBOX/rg-docs"; mkdir -p "$RG_DOCS"; ( cd "$RG_DOCS" && git init -q )
+lines() { node -e "process.stdout.write(JSON.stringify(Array.from({length:$1},(_,i)=>'line'+i).join('\\n')))"; }
+# gate_write <session> <file> <n-lines>   gate_commit <session> [cwd] [command]   gate_agent <session> <type>
+gate_write() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$2\",\"content\":$(lines "$3")}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1; }
+gate_commit() { echo "{\"session_id\":\"$1\",\"cwd\":\"${2:-$RG}\",\"tool_input\":{\"command\":\"${3:-git commit -m x}\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" bash 2>&1 >/dev/null; echo "EXIT:$?"; }
+gate_agent() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"$2\",\"prompt\":\"review\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" agent >/dev/null 2>&1; }
+
+gate_write rg1 "$RG/src/a.js" 25
+OUT=$(gate_commit rg1)
+if echo "$OUT" | grep -q "EXIT:2" && echo "$OUT" | grep -q "code-reviewer"; then
+  pass "review gate: blocks a commit of 25 unreviewed code lines, naming the code-reviewer"
+else
+  fail "review gate: let 25 unreviewed code lines be committed"
+fi
+gate_agent rg1 "claude-setup:code-reviewer"
+B=$(gate_commit rg1)
+echo "$OUT$B" | tr -d '\n' | grep -q "EXIT:2.*EXIT:0" && pass "review gate: a code-reviewer run unblocks the commit" \
+  || fail "review gate: code-reviewer run did not unblock (or nothing was blocked)"
+
+gate_write rg2 "$RG/src/a.js" 25; gate_agent rg2 "Explore"
+OUT=$(gate_commit rg2)
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: another subagent does not count as a review" || fail "review gate: a non-reviewer subagent reset the gate"
+
+gate_write rg3 "$RG/src/a.js" 5
+A=$(gate_commit rg3); gate_write rg3 "$RG/src/b.js" 20; B=$(gate_commit rg3)
+echo "$A$B" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2" && pass "review gate: small edits pass, and they accumulate to the gate" \
+  || fail "review gate: small edits blocked, or small edits never accumulate"
+
+gate_write rg4 "$RG/README.md" 200; gate_write rg4 "$RG_DOCS/notes.js" 200
+A=$(gate_commit rg4); gate_write rg4 "$RG/src/a.js" 25; B=$(gate_commit rg4)
+echo "$A$B" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2" && pass "review gate: docs and non-code-repo edits don't count" \
+  || fail "review gate: docs/non-code edits counted, or code edits stopped counting"
+
+# The session cwd needn't be the repo: \`cd repo && git commit\` from elsewhere is still gated.
+gate_write rg5 "$RG/src/a.js" 25
+OUT=$(gate_commit rg5 "$SANDBOX" "cd $RG && git commit -m x")
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: a commit from outside the repo's cwd is still gated" || fail "review gate: dodged by committing from another cwd"
+
+# W2: tallying BEFORE the edit counted failed ("old_string not found") and
+# denied edits, and every retry again. Only a completed edit counts.
+gate_pre() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$RG/src/a.js\",\"content\":$(lines 25)}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" edit >/dev/null 2>&1; }
+gate_pre rg7; A=$(gate_commit rg7); gate_write rg7 "$RG/src/a.js" 25; B=$(gate_commit rg7)
+echo "$A$B" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2" && pass "review gate: only completed edits count (attempts/retries don't)" \
+  || fail "review gate: an edit attempt counted before it happened, or completed edits don't count"
+
+# W3: every edit shape tallies what it changed (read the tally itself).
+tally() { cat "$SANDBOX/.claude/metrics/.review-$1" 2>/dev/null || echo 0; }
+post_edit() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RG\",\"tool_name\":\"$2\",\"tool_input\":$3}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1; }
+post_edit rg8 Edit "{\"file_path\":\"$RG/src/a.js\",\"old_string\":\"a\\nb\",\"new_string\":\"a\\nb\\nc\"}"
+[ "$(tally rg8)" = 3 ] && pass "review gate: Edit counts its larger side" || fail "review gate: Edit tallied $(tally rg8), expected 3"
+post_edit rg9 MultiEdit "{\"file_path\":\"$RG/src/a.js\",\"edits\":[{\"old_string\":\"x\",\"new_string\":\"x\\ny\"},{\"old_string\":\"p\\nq\\nr\",\"new_string\":\"p\"}]}"
+[ "$(tally rg9)" = 5 ] && pass "review gate: MultiEdit sums its edits" || fail "review gate: MultiEdit tallied $(tally rg9), expected 5"
+post_edit rg10 NotebookEdit "{\"notebook_path\":\"$RG/nb.ipynb\",\"new_source\":\"import x\\nx.run()\"}"
+[ "$(tally rg10)" = 2 ] && pass "review gate: NotebookEdit counts its new source" || fail "review gate: NotebookEdit tallied $(tally rg10), expected 2"
+post_edit rg11 Write "{\"file_path\":\"$RG/src/a.js\",\"content\":\"a\\nb\\n\"}"
+[ "$(tally rg11)" = 2 ] && pass "review gate: a trailing newline is not an extra line" || fail "review gate: 'a\\\\nb\\\\n' tallied $(tally rg11), expected 2"
+
+# W1: a docs-repo commit isn't gated by code edits elsewhere — reviewing the docs
+# diff would reset the tally and let the real code commit through unreviewed.
+# Committing into a code repo via cd/-C from that cwd is still gated.
+gate_write rg12 "$RG/src/a.js" 25
+A=$(gate_commit rg12 "$RG_DOCS"); B=$(gate_commit rg12 "$RG_DOCS" "cd $RG && git commit -m x"); C=$(gate_commit rg12 "$RG_DOCS" "git -C $RG commit -m x")
+echo "$A$B$C" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2.*EXIT:2" && pass "review gate: docs-repo commits pass; cd/-C into the code repo is still gated" \
+  || fail "review gate: blocked a docs-repo commit, or cd/-C dodges the gate"
+
+# The tally is the gate's state — Claude can't zero it with an edit.
+OUT=$(echo "{\"tool_input\":{\"file_path\":\"$SANDBOX/.claude/metrics/.review-rg1\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: the tally file is protected from edits" || fail "review gate: the tally file can be edited to zero"
+
+node -e "
+const h = require('$SCRIPT_DIR/hooks/hooks.json').hooks.PostToolUse || [];
+process.exit(h.some(e => /\bEdit\b/.test(e.matcher) && /\bWrite\b/.test(e.matcher) && /\bMultiEdit\b/.test(e.matcher) && /\bNotebookEdit\b/.test(e.matcher) && e.hooks.some(x => x.command.includes('dispatch.mjs post-edit'))) ? 0 : 1)" \
+  && pass "review gate: completed edits are wired to the post-edit role" || fail "review gate: post-edit role not wired — nothing would ever be tallied"
+
+node -e "
+const h = require('$SCRIPT_DIR/hooks/hooks.json').hooks.PreToolUse || [];
+process.exit(h.some(e => /\bAgent\b/.test(e.matcher) && /\bTask\b/.test(e.matcher) && e.hooks.some(x => x.command.includes('dispatch.mjs agent'))) ? 0 : 1)" \
+  && pass "review gate: Agent|Task calls are wired to the agent role" || fail "review gate: subagent calls not wired — reviews would never register"
+
+# ============================================================
 # SECTION: verify.sh stack & runner detection
 # ============================================================
 # These run verify.sh against synthetic repos with PATH-shimmed package
