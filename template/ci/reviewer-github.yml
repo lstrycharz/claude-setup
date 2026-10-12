@@ -15,7 +15,8 @@
 #   1. Copy to .github/workflows/logic-review.yml
 #   2. Add OPENROUTER_API_KEY as a repository secret
 #      (Settings → Secrets and variables → Actions).
-#   3. Optional: set LOGIC_REVIEWER_MODEL to pin a specific cross-vendor model.
+#   3. Optional: set a repository VARIABLE named LOGIC_REVIEWER_MODEL to pick
+#      another OpenRouter model (default: deepseek/deepseek-v4-pro).
 name: logic-review
 on:
   pull_request:
@@ -40,6 +41,9 @@ jobs:
       - name: Logic review (advisory)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Repository variable (Settings → Secrets and variables → Actions →
+          # Variables). Unset → the reviewer's default, deepseek/deepseek-v4-pro.
+          LOGIC_REVIEWER_MODEL: ${{ vars.LOGIC_REVIEWER_MODEL }}
           REVIEW_BASE_REF: origin/${{ github.base_ref }}
           REVIEW_COMMENT_FILE: ${{ github.workspace }}/logic-review.md
         run: |
