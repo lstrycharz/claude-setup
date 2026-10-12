@@ -25,6 +25,14 @@ The reviewer is `.claude/bin/review-diff.mjs` (advisory; see `.claude/review/log
 
 7. **Present, don't commit.** End with a table — each flag → real? / fixed? / skipped (why) — and the full diff for review. Then stop. The user reviews and decides what to commit.
 
+8. **Record the verdicts in `.claude/review-ledger.md`.** Append one row per
+   finding — date, PR, the model from `LOGIC_REVIEWER_MODEL`, a category, the
+   finding, `real` / `false-positive` / `unverifiable`, and your reasoning. You
+   already determined all of this in steps 4 and 7; this stops it being thrown
+   away. The reviewer is advisory *pending* false-positive data, and that data
+   does not exist unless it is written down. Do not edit or re-grade existing
+   rows.
+
 ## Guardrails
 - You are the **supervised** fixer, not an autonomous one. Do not commit; do not push.
 - A flag from a probabilistic reviewer is a hypothesis — confirm it against the code first.

@@ -915,6 +915,38 @@ rm -f .claude/verify.sh
 cd "$SANDBOX"
 
 # ============================================================
+# SECTION: reviewer calibration ledger
+# ============================================================
+# advisory-first only graduates to a decision if the false-positive data it
+# claims to gather is actually written down. The ledger is ACCUMULATED DATA, so
+# the load-bearing property is that /update-floor must never wipe it —
+# update-claude overwrites .claude/{bin,review,ci,configs}, which is exactly
+# why the ledger does not live in review/.
+section "reviewer calibration ledger"
+
+[ -f "$SCRIPT_DIR/template/review-ledger.md" ] && pass "template ships review-ledger.md" || fail "template/review-ledger.md missing"
+[ -f "$SCRIPT_DIR/REVIEW_LEDGER.md" ] && pass "the harness keeps its own REVIEW_LEDGER.md" || fail "REVIEW_LEDGER.md missing"
+grep -q "review-ledger" "$SCRIPT_DIR/commands/logic-review.md" && pass "/logic-review records verdicts in the ledger" || fail "/logic-review does not mention the ledger"
+
+LEDG="$SANDBOX/proj-ledger"
+rm -rf "$LEDG"; mkdir -p "$LEDG"
+( cd "$LEDG" && git init -q ) || fail "ledger fixture setup failed"
+printf '{ "scripts": { "test": "x" } }\n' > "$LEDG/package.json"
+( cd "$LEDG" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/init-ledger.log 2>&1
+[ -f "$LEDG/.claude/review-ledger.md" ] && pass "init-claude lands the ledger at .claude/review-ledger.md" || fail "ledger not scaffolded into .claude/"
+# It must NOT be inside review/, which update-claude overwrites wholesale.
+[ -f "$LEDG/.claude/review/review-ledger.md" ] && fail "ledger sits in review/ — update-floor would wipe it" || pass "ledger is outside review/ (the overwrite path)"
+
+# The regression that matters: accumulated rows survive /update-floor.
+# Append only to a ledger that was really scaffolded, so this cannot pass by
+# the printf creating the file itself.
+[ -f "$LEDG/.claude/review-ledger.md" ] || fail "preservation test is vacuous: ledger was never scaffolded"
+printf '| 2026-01-01 | #999 | model-x | correctness | sentinel row | false-positive | kept? |\n' >> "$LEDG/.claude/review-ledger.md"
+( cd "$LEDG" && "$SCRIPT_DIR/bin/update-claude" ) > "$LOGS"/update-ledger.log 2>&1
+grep -q "sentinel row" "$LEDG/.claude/review-ledger.md" && pass "update-claude preserves accumulated ledger rows" || fail "update-claude wiped the ledger (accumulated data lost)"
+cd "$SANDBOX"
+
+# ============================================================
 # SECTION: Uninstall (rules + legacy pre-plugin cleanup)
 # ============================================================
 # uninstall.sh removes the global rules and migrates machines off the OLD
