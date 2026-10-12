@@ -26,6 +26,7 @@ These ship inside the plugin and run automatically in the background, stopping C
 | **Weakening your code rules** | Blocks Claude from editing linter/formatter/typecheck/test-runner configs — and the verification floor's own files. It has to fix the code, not loosen the rules. |
 | **Skipping safety checks** | Blocks `--no-verify` (and its `-n` short form, and `core.hooksPath` tricks) on git commands. Your secret scanner stays on. |
 | **Committing with no floor** | Blocks `git commit` in a code repo that has no executable pre-commit gate — so commits can't ship with nothing checking them. Points you at `/init-floor`. |
+| **Skipping the code review** | Blocks `git commit` once more than 20 lines of code changed since the last **code-reviewer** run — the review `workflow.md` calls mandatory is enforced, not left to memory. Docs and small edits pass; run the reviewer (or `/code-review`), fix what it finds, then commit. |
 | **Sneaking past the string checks** | A state-based watchdog runs *after* every terminal command: if a commit landed in a floorless repo — no matter how the command was spelled — Claude is told to verify and amend. |
 | **Running out of memory** | After 50 edits, suggests saving progress and freeing context with `/clear` or `/compact`. |
 
@@ -88,13 +89,15 @@ It is **advisory** — it posts its findings as a comment on the PR and **never 
 
 Open a pull request and the reviewer posts its findings as a comment. If the model you picked is ever retired, it says so on the PR instead of failing silently.
 
+**How it behaves.** It sees each change with 10 lines of surrounding code, so it can check its own claims; anything that depends on how code *runs* (shell quoting, exit codes, obscure library behaviour) comes back as a `verify:` warning rather than a critical flag, since it can read code but not execute it. It routes to OpenRouter's fastest providers with reasoning on, allows 300 seconds, and retries once on a timeout or server error. If it still gets no verdict, the PR comment says **Not reviewed** — never a silent pass. Each run logs which provider answered, how long it took, and how much it thought.
+
 > **Run it locally too:** `OPENROUTER_API_KEY=sk-... node .claude/bin/review-diff.mjs` reviews your current branch from the terminal. Point `OPENROUTER_BASE_URL` at a local Ollama/vLLM endpoint to run it free and offline.
 
 ### Slash Commands (on-demand checks)
 
 Type these in Claude Code whenever you want a second opinion:
 
-- **`/code-review`** — Reviews everything you've changed but haven't committed yet. Finds bugs, security issues, and style problems. Like having a senior dev look over your shoulder.
+- **`/code-review`** — Reviews everything you've changed but haven't committed yet. Finds bugs, security issues, and style problems. Like having a senior dev look over your shoulder. The reviewer (and `/security-scan`'s) runs on the newest Fable automatically — `model: fable` follows new releases.
 - **`/security-scan`** — Scans your whole project for security vulnerabilities (leaked secrets, injection risks, auth problems). Based on the OWASP Top 10.
 - **`/logic-review`** — Runs the cross-vendor reviewer on your current changes, then fixes the *real* findings with you reviewing each step (RED-green, surgical, never auto-commits).
 
