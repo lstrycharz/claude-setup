@@ -25,6 +25,7 @@ section() { echo ""; echo -e "${YELLOW}→ $1${NC}"; }
 cleanup() {
   [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null
   export HOME="$ORIG_HOME"
+  chmod -R u+w "$SANDBOX" 2>/dev/null   # read-only sandbox fixtures, if a run was interrupted
   rm -rf "$SANDBOX"
 }
 trap cleanup EXIT
@@ -1195,6 +1196,87 @@ printf '{ "scripts": { "test": "x" } }\n' > "$LEDG/package.json"
 printf '| 2026-01-01 | #999 | model-x | correctness | sentinel row | false-positive | kept? |\n' >> "$LEDG/.claude/review-ledger.md"
 ( cd "$LEDG" && "$SCRIPT_DIR/bin/update-claude" ) > "$LOGS"/update-ledger.log 2>&1
 grep -q "sentinel row" "$LEDG/.claude/review-ledger.md" && pass "update-claude preserves accumulated ledger rows" || fail "update-claude wiped the ledger (accumulated data lost)"
+cd "$SANDBOX"
+
+# ============================================================
+# SECTION: setup under the app's sandbox
+# ============================================================
+# In the Claude desktop app, Bash runs sandboxed, and the sandbox protects
+# .git/hooks/ and .claude/settings*.json — exactly what the scaffolder writes.
+# A real /init-floor run (2026-10-16) was cut short there, leaving a partial
+# .claude/ that Claude then rebuilt by hand. A read-only directory stands in for
+# the sandbox's denial: to the script both are "can't write here".
+section "setup under the app's sandbox"
+
+# init-claude: check BEFORE writing — a denied write means nothing is touched.
+SBX="$SANDBOX/sbx-hooks"; rm -rf "$SBX"; mkdir -p "$SBX"; ( cd "$SBX" && git init -q && echo '{}' > package.json )
+chmod 555 "$SBX/.git/hooks"
+OUT=$( cd "$SBX" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+chmod 755 "$SBX/.git/hooks"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -qi "sandbox" && echo "$OUT" | grep -qF "cd \"$SBX\" && bash" && echo "$OUT" | grep -q "bin/init-claude" \
+   && [ ! -e "$SBX/.claude/CLAUDE.md" ] && [ ! -e "$SBX/.gitignore" ]; then
+  pass "init-claude: unwritable .git/hooks → clear sandbox message, the command to run, nothing written"
+else
+  fail "init-claude: unwritable .git/hooks left a partial scaffold or no clear message"
+fi
+SBX2="$SANDBOX/sbx-settings"; rm -rf "$SBX2"; mkdir -p "$SBX2/.claude/.cc-writes"; ( cd "$SBX2" && git init -q && echo '{}' > package.json )
+chmod 555 "$SBX2/.claude"
+OUT=$( cd "$SBX2" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+chmod 755 "$SBX2/.claude"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -q "settings.json" && echo "$OUT" | grep -qi "sandbox" && echo "$OUT" | grep -q "nothing was changed" && [ ! -e "$SBX2/.gitignore" ] && [ ! -e "$SBX2/.git/hooks/pre-commit" ]; then
+  pass "init-claude: unwritable .claude/settings.json → names it, nothing written"
+else
+  fail "init-claude: unwritable settings path left a partial scaffold or didn't name it"
+fi
+# Regression guard: the check itself must leave no probe files behind.
+SBX3="$SANDBOX/sbx-ok"; rm -rf "$SBX3"; mkdir -p "$SBX3"; ( cd "$SBX3" && git init -q && echo '{}' > package.json )
+( cd "$SBX3" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/sbx-ok.log 2>&1
+[ -x "$SBX3/.git/hooks/pre-commit" ] && [ -z "$(ls -A "$SBX3/.git/hooks" | grep -i probe)" ] \
+  && pass "init-claude: the write check leaves no probe files behind" || fail "init-claude: probe file left behind, or hooks not installed"
+
+# W1: an existing hook init-claude would overwrite, but can't, is caught up
+# front — not reported as "✅ installed" while the old hook stays.
+SBX4="$SANDBOX/sbx-ro-hook"; rm -rf "$SBX4"; mkdir -p "$SBX4"; ( cd "$SBX4" && git init -q && echo '{}' > package.json )
+echo "OLD HOOK" > "$SBX4/.git/hooks/pre-commit"; chmod 444 "$SBX4/.git/hooks/pre-commit"
+OUT=$( cd "$SBX4" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+chmod 644 "$SBX4/.git/hooks/pre-commit"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -q ".git/hooks/pre-commit" && ! echo "$OUT" | grep -q "Git hooks installed" && [ ! -e "$SBX4/.claude/CLAUDE.md" ]; then
+  pass "init-claude: an existing hook it can't overwrite is caught before writing anything"
+else
+  fail "init-claude: claimed hooks installed while an unwritable old hook stayed"
+fi
+# W2: a repo with no .git/hooks/ directory isn't a sandbox problem — create it.
+SBX5="$SANDBOX/sbx-no-hooks-dir"; rm -rf "$SBX5"; mkdir -p "$SBX5"; ( cd "$SBX5" && git init -q && echo '{}' > package.json && rm -rf .git/hooks )
+OUT=$( cd "$SBX5" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+if echo "$OUT" | grep -q "EXIT:0" && [ -x "$SBX5/.git/hooks/pre-commit" ] && ! echo "$OUT" | grep -qi "sandbox"; then
+  pass "init-claude: a missing .git/hooks/ is created, not misdiagnosed as the sandbox"
+else
+  fail "init-claude: a missing .git/hooks/ was blamed on the sandbox (or hooks not installed)"
+fi
+
+# update-claude: a hook it can't install is said out loud, not skipped quietly.
+UCS="$SANDBOX/ucs"; rm -rf "$UCS"; mkdir -p "$UCS"; ( cd "$UCS" && git init -q && echo '{}' > package.json && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/ucs-init.log 2>&1
+rm -f "$UCS/.git/hooks/pre-commit" "$UCS/.git/hooks/pre-push"; chmod 555 "$UCS/.git/hooks"
+OUT=$( cd "$UCS" && "$SCRIPT_DIR/bin/update-claude" 2>&1; echo "EXIT:$?" )
+chmod 755 "$UCS/.git/hooks"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -qi "sandbox" && echo "$OUT" | grep -qF "cd \"$UCS\" && bash" && echo "$OUT" | grep -q "bin/update-claude"; then
+  pass "update-claude: an uninstallable hook → exit 1, sandbox message, the command to run"
+else
+  fail "update-claude: an uninstallable hook was skipped quietly"
+fi
+
+# update-claude adds the calibration ledger to projects scaffolded before it existed.
+rm -f "$UCS/.claude/review-ledger.md"
+( cd "$UCS" && "$SCRIPT_DIR/bin/update-claude" ) > "$LOGS"/ucs-ledger.log 2>&1
+[ -f "$UCS/.claude/review-ledger.md" ] && pass "update-claude adds a missing review-ledger.md" || fail "update-claude never adds the ledger to older projects"
+
+# The commands tell Claude to run the script once, unsandboxed — and to stop,
+# not rebuild the scaffold by hand, if that's refused.
+grep -qi "sandbox" "$SCRIPT_DIR/commands/init-floor.md" && grep -qi "by hand" "$SCRIPT_DIR/commands/init-floor.md" \
+  && pass "/init-floor: run once outside the sandbox; never rebuild it by hand" || fail "/init-floor says nothing about the sandbox"
+grep -qi "sandbox" "$SCRIPT_DIR/commands/update-floor.md" && pass "/update-floor mentions the sandbox for hooks" || fail "/update-floor says nothing about the sandbox"
+grep -q "refuses to touch an existing" "$SCRIPT_DIR/commands/init-floor.md" \
+  && fail "/init-floor still claims it refuses any existing .claude/ (stale since v1.1.2)" || pass "/init-floor describes the current .claude/ handling"
 cd "$SANDBOX"
 
 # ============================================================

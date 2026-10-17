@@ -18,6 +18,8 @@
 # Adds only if missing (never overwrites your customizations):
 #   .claude/verify.sh       you edit this for your project's real commands
 #   .git/hooks/pre-commit   the secret-scan + floor hook
+#   .git/hooks/pre-push     the full floor
+#   .claude/review-ledger.md  the reviewer calibration ledger (accumulated data)
 #
 # Never touches: CLAUDE.md, CLAUDE.local.md, PROGRESS.md, settings*.json, your code.
 
@@ -60,16 +62,40 @@ else
   echo "  • .claude/verify.sh kept (yours) — diff against $TEMPLATE/verify.sh for new options"
 fi
 
-# 3. git hooks — add only if missing (don't clobber customized ones).
+# 3. The calibration ledger — accumulated data, so add only if missing. Older
+#    projects were scaffolded before it existed, and nothing else adds it.
+if [ ! -f ".claude/review-ledger.md" ] && [ -f "$TEMPLATE/review-ledger.md" ]; then
+  cp "$TEMPLATE/review-ledger.md" .claude/review-ledger.md
+  echo "  ✓ .claude/review-ledger.md added (was missing)"
+fi
+
+# 4. git hooks — add only if missing (don't clobber customized ones). The
+#    Claude app's sandbox protects .git/hooks/, so a failed install is said out
+#    loud: a missing hook means commits/pushes run no floor at all.
+hooks_failed=""
+install_hook() { # install_hook <template-file> <hook-name> <success-message>
+  if cp "$TEMPLATE/$1" ".git/hooks/$2" 2>/dev/null && chmod +x ".git/hooks/$2" 2>/dev/null; then
+    echo "$3"
+  else
+    hooks_failed="$hooks_failed      .git/hooks/$2
+"
+  fi
+}
 if [ -d ".git" ] && [ ! -f ".git/hooks/pre-commit" ]; then
-  cp "$TEMPLATE/.pre-commit-hook" .git/hooks/pre-commit
-  chmod +x .git/hooks/pre-commit
-  echo "  ✓ .git/hooks/pre-commit installed (was missing)"
+  install_hook .pre-commit-hook pre-commit "  ✓ .git/hooks/pre-commit installed (was missing)"
 fi
 if [ -d ".git" ] && [ ! -f ".git/hooks/pre-push" ] && [ -f "$TEMPLATE/.pre-push-hook" ]; then
-  cp "$TEMPLATE/.pre-push-hook" .git/hooks/pre-push
-  chmod +x .git/hooks/pre-push
-  echo "  ✓ .git/hooks/pre-push installed (was missing — full floor now gates pushes)"
+  install_hook .pre-push-hook pre-push "  ✓ .git/hooks/pre-push installed (was missing — full floor now gates pushes)"
+fi
+if [ -n "$hooks_failed" ]; then
+  echo ""
+  echo "❌ Couldn't install these git hooks — commits/pushes here run NO floor until they exist:"
+  printf '%s' "$hooks_failed"
+  echo "   Most likely cause: in the Claude desktop app, Bash runs in a sandbox that"
+  echo "   protects .git/hooks/. Everything above was updated; to add the hooks, run the"
+  echo "   updater once outside the sandbox — paste this into a terminal:"
+  echo "     cd \"$PWD\" && bash \"$SCRIPT_DIR/$(basename "$0")\""
+  exit 1
 fi
 
 echo ""

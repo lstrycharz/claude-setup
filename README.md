@@ -208,6 +208,13 @@ If instead it **refuses** and lists files, the project is genuinely already
 scaffolded — run `/update-floor` to refresh the infrastructure in place rather
 than deleting anything.
 
+**If it says `Can't write these — nothing was changed`,** that's the Claude
+app's sandbox. It protects `.git/hooks/` and `.claude/settings*.json` so Claude
+can't change its own permissions or plant hooks, and those are exactly what the
+scaffolder writes. It checks first and touches nothing, so there's no half-made
+setup to clean up. Run the command it prints in your own terminal, from the
+project folder, then come back to Claude for the next steps.
+
 ### Step 3: Start working
 
 Open Claude Code and enter plan mode. On your first planning session, Claude will automatically fill in your project's `CLAUDE.md` with the tech stack, commands, and project structure you discussed. You review it, confirm, and you're set.
