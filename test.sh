@@ -87,6 +87,45 @@ grep -q 'gh pr comment' "$SCRIPT_DIR/template/ci/reviewer-github.yml" && pass "r
 # uv/poetry project doesn't silently no-op its Python checks (false green).
 grep -qiE 'python|uv|poetry' "$SCRIPT_DIR/template/ci/github-actions.yml" && pass "ci/github-actions.yml notes Python setup" || fail "ci/github-actions.yml has no Python setup note"
 grep -qiE 'python|uv|poetry' "$SCRIPT_DIR/template/ci/bitbucket-pipelines.yml" && pass "ci/bitbucket-pipelines.yml notes Python setup" || fail "ci/bitbucket-pipelines.yml has no Python setup note"
+# CI must install with the project's OWN package manager and lockfile, as
+# verify.sh runs with it. The templates did `npm install` on every repo, so a
+# pnpm/yarn/bun project resolved versions outside its lockfile in CI — the
+# false green verify.sh's header warns about (found on wealth-tracker, pnpm).
+INSTALL_DEPS="$SCRIPT_DIR/template/bin/install-deps.sh"
+deps_cmd() { # deps_cmd <files...> → the install command install-deps.sh picks there
+  local d; d=$(mktemp -d "$SANDBOX/deps-XXXX"); for f in "$@"; do : > "$d/$f"; done
+  ( cd "$d" && INSTALL_DEPS_DRY_RUN=1 bash "$INSTALL_DEPS" 2>/dev/null )
+}
+[ "$(deps_cmd package.json pnpm-lock.yaml)" = "→ corepack enable && pnpm install --frozen-lockfile" ] \
+  && pass "install-deps: pnpm-lock.yaml → pnpm, frozen" || fail "install-deps: pnpm project got: $(deps_cmd package.json pnpm-lock.yaml)"
+[ "$(deps_cmd package.json yarn.lock)" = "→ corepack enable && yarn install --frozen-lockfile" ] \
+  && pass "install-deps: yarn.lock (classic) → yarn, frozen" || fail "install-deps: yarn classic got: $(deps_cmd package.json yarn.lock)"
+[ "$(deps_cmd package.json yarn.lock .yarnrc.yml)" = "→ corepack enable && yarn install --immutable" ] \
+  && pass "install-deps: yarn berry (.yarnrc.yml) → yarn --immutable" || fail "install-deps: yarn berry got: $(deps_cmd package.json yarn.lock .yarnrc.yml)"
+[ "$(deps_cmd package.json bun.lock)" = "→ bun install --frozen-lockfile" ] && [ "$(deps_cmd package.json bun.lockb)" = "→ bun install --frozen-lockfile" ] \
+  && pass "install-deps: bun.lock / bun.lockb → bun, frozen" || fail "install-deps: bun project got: $(deps_cmd package.json bun.lock)"
+[ "$(deps_cmd package.json package-lock.json)" = "→ npm ci" ] && [ "$(deps_cmd package.json)" = "→ npm install" ] \
+  && pass "install-deps: package-lock.json → npm ci; no lockfile → npm install" || fail "install-deps: npm projects got: $(deps_cmd package.json package-lock.json) / $(deps_cmd package.json)"
+deps_cmd pyproject.toml | grep -q "nothing to install" && pass "install-deps: no package.json → installs nothing" || fail "install-deps: tried to install without a package.json"
+# Yarn 2+ declared via packageManager is berry even with no .yarnrc.yml (the
+# scaffolded .gitignore hides .yarnrc.yml, so CI may never see one).
+YB=$(mktemp -d "$SANDBOX/deps-XXXX"); printf '{"packageManager":"yarn@4.1.0"}\n' > "$YB/package.json"; : > "$YB/yarn.lock"
+[ "$( cd "$YB" && INSTALL_DEPS_DRY_RUN=1 bash "$INSTALL_DEPS" 2>/dev/null )" = "→ corepack enable && yarn install --immutable" ] \
+  && pass "install-deps: packageManager yarn@4 → --immutable" || fail "install-deps: yarn 4 via packageManager got --frozen-lockfile"
+# Without "packageManager", corepack runs ITS default pnpm/yarn, not yours — say so.
+PW=$(mktemp -d "$SANDBOX/deps-XXXX"); : > "$PW/package.json"; : > "$PW/pnpm-lock.yaml"
+( cd "$PW" && INSTALL_DEPS_DRY_RUN=1 bash "$INSTALL_DEPS" 2>&1 >/dev/null ) | grep -q "packageManager" \
+  && pass "install-deps: warns when pnpm/yarn version isn't pinned via packageManager" || fail "install-deps: silent about corepack's unpinned default version"
+# Missing tools fail loudly instead of installing nothing (bun; corepack, gone from Node 25).
+BN=$(mktemp -d "$SANDBOX/deps-XXXX"); : > "$BN/package.json"; : > "$BN/bun.lock"
+OUT=$( cd "$BN" && PATH=/usr/bin:/bin bash "$INSTALL_DEPS" 2>&1; echo "EXIT:$?" )
+echo "$OUT" | grep -qx "EXIT:1" && echo "$OUT" | grep -q "setup-bun" && pass "install-deps: bun lockfile without bun → exit 1, names setup-bun" || fail "install-deps: ran on with no bun installed"
+OUT=$( cd "$PW" && PATH=/usr/bin:/bin bash "$INSTALL_DEPS" 2>&1; echo "EXIT:$?" )
+echo "$OUT" | grep -qx "EXIT:1" && echo "$OUT" | grep -q "corepack isn't installed" && pass "install-deps: pnpm lockfile without corepack → exit 1, says why" || fail "install-deps: ran on with no corepack"
+for t in github-actions.yml bitbucket-pipelines.yml; do
+  grep -q "install-deps.sh" "$SCRIPT_DIR/template/ci/$t" && ! grep -q "npm install" "$SCRIPT_DIR/template/ci/$t" \
+    && pass "ci/$t installs via install-deps.sh (no bare npm install)" || fail "ci/$t still installs with npm regardless of the lockfile"
+done
 [ -f "$SCRIPT_DIR/commands/code-review.md" ] && pass "commands/code-review.md installed" || fail "commands/code-review.md missing"
 [ -f "$SCRIPT_DIR/commands/security-scan.md" ] && pass "commands/security-scan.md installed" || fail "commands/security-scan.md missing"
 [ -f "$SCRIPT_DIR/commands/logic-review.md" ] && pass "commands/logic-review.md installed" || fail "commands/logic-review.md missing"
@@ -430,6 +469,13 @@ touch "$R/pnpm-lock.yaml"
 run_verify "$R"
 grep -q '^pnpm ' "$SHIMLOG" && pass "verify: uses pnpm when pnpm-lock.yaml present" || fail "verify: did not use pnpm for a pnpm repo"
 grep -q '^npm '  "$SHIMLOG" && fail "verify: fell back to npm despite pnpm-lock.yaml" || pass "verify: does not invoke npm when pnpm is the manager"
+# bun.lock (text) is bun's default lockfile since 1.2; bun.lockb is legacy.
+reset_shims; mkshim bun; mkshim npm
+R="$SANDBOX/v-bun"; mkdir -p "$R"
+printf '{ "scripts": { "lint": "x", "test": "x" } }\n' > "$R/package.json"
+touch "$R/bun.lock"
+run_verify "$R"
+grep -q '^bun ' "$SHIMLOG" && ! grep -q '^npm ' "$SHIMLOG" && pass "verify: uses bun for a bun.lock project" || fail "verify: ran npm for a bun.lock project"
 
 # --- Node: no lockfile → npm default ---
 reset_shims; mkshim pnpm; mkshim npm
@@ -916,6 +962,7 @@ git config user.name Test
 
 [ -d "$PROJECT/.claude" ] && pass "init-claude creates .claude/" || fail "init-claude did not create .claude/"
 [ -f "$PROJECT/.claude/CLAUDE.md" ] && pass "init-claude copies CLAUDE.md" || fail "init-claude did not copy CLAUDE.md"
+[ -f "$PROJECT/.claude/bin/install-deps.sh" ] && pass "init-claude ships .claude/bin/install-deps.sh (the CI templates call it)" || fail "init-claude did not ship install-deps.sh"
 [ -f "$PROJECT/.gitignore" ] && pass "init-claude creates .gitignore when missing" || fail "init-claude did not create .gitignore"
 [ -x "$PROJECT/.git/hooks/pre-commit" ] && pass "init-claude installs pre-commit hook" || fail "init-claude did not install pre-commit hook"
 [ -x "$PROJECT/.git/hooks/pre-push" ] && pass "init-claude installs pre-push hook (full floor)" || fail "init-claude did not install pre-push hook"
@@ -1152,6 +1199,8 @@ echo "OLD-SENTINEL" > .claude/bin/review-diff.mjs
 echo "OLD-PROMPT"   > .claude/review/logic-reviewer.md
 "$SCRIPT_DIR/bin/update-claude" > "$LOGS"/uc-run.log 2>&1
 grep -q "OLD-SENTINEL" .claude/bin/review-diff.mjs && fail "update-claude did not refresh review-diff.mjs" || pass "update-claude refreshes the reviewer code"
+echo "OLD-DEPS" > .claude/bin/install-deps.sh; "$SCRIPT_DIR/bin/update-claude" > "$LOGS"/uc-deps.log 2>&1
+grep -q "OLD-DEPS" .claude/bin/install-deps.sh && fail "update-claude did not refresh install-deps.sh" || pass "update-claude refreshes install-deps.sh"
 grep -q "OLD-PROMPT" .claude/review/logic-reviewer.md && fail "update-claude did not refresh the prompt" || pass "update-claude refreshes the reviewer prompt"
 
 # Preserves a customized verify.sh — never clobbers your project's commands.

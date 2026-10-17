@@ -12,7 +12,7 @@
 # "what the agent runs" and "what blocks the merge".
 #
 # Stack handling is deterministic, not inferred:
-#   - Node manager comes from the LOCKFILE (pnpm-lock.yaml / yarn.lock / bun.lockb,
+#   - Node manager comes from the LOCKFILE (pnpm-lock.yaml / yarn.lock / bun.lock(b),
 #     else npm). Running npm against a pnpm tree resolves wrong → false greens.
 #   - Python tools run THROUGH the project env (`uv run` / `poetry run`) so they
 #     hit the venv, never a global pytest that collects 0 tests and reports green.
@@ -61,7 +61,7 @@ no_test_floor() { # called when a stack has no tests; warns, and fails unless op
 node_manager() {   # echo the JS package manager for the cwd, from its lockfile
   if   [ -f pnpm-lock.yaml ]; then echo pnpm
   elif [ -f yarn.lock ];      then echo yarn
-  elif [ -f bun.lockb ];      then echo bun
+  elif [ -f bun.lock ] || [ -f bun.lockb ]; then echo bun
   else echo npm
   fi
 }

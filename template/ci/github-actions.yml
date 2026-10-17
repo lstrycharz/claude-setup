@@ -21,11 +21,9 @@ jobs:
       # github-actions-python.yml instead (or add its uv step here for a
       # monorepo) — otherwise verify.sh's Python checks silently no-op and you
       # get a false green.
-      # Adjust install step for your stack (npm ci / pip install / etc.).
+      # Installs with the project's own package manager and lockfile (pnpm,
+      # yarn, bun or npm — picked the same way verify.sh picks it), frozen.
       - name: Install deps
-        run: |
-          if [ -f package-lock.json ]; then npm ci
-          elif [ -f package.json ]; then npm install
-          fi
+        run: bash .claude/bin/install-deps.sh
       - name: Run the floor
         run: bash .claude/verify.sh
