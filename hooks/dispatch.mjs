@@ -51,6 +51,10 @@
  *     can be dodged by spelling (subshells, scripts, encodings) — but the
  *     commit either exists or it doesn't. Exit 2 here doesn't undo the commit
  *     (the tool already ran); it feeds the model a remediation instruction.
+ *   - review-watchdog: the same state-based check for the review gate — a
+ *     fresh commit of ours with more than REVIEW_GATE_LINES unreviewed code
+ *     lines, however it was spelled (e.g. `bash -c 'git commit …'`). Both
+ *     post-bash checks report together.
  *
  * Exit 0 = allow, Exit 2 = block / feed remediation to the model (stderr).
  * Any internal error → allow: never block on our own bug.
@@ -390,8 +394,70 @@ function tallyEdit(input) {
 // after the reset. That over-blocks once (rerun the reviewer) — fails closed.
 function resetOnReview(input) {
   if (!CODE_REVIEWER.test(String(input?.tool_input?.subagent_type || ''))) return null;
+  // Exactly the tally. The HEAD caches (`…-head-<repo>`) must survive a review,
+  // or the next dodge would be a first sighting with nothing to compare to.
   try { unlinkSync(reviewTallyFile(input)); } catch { /* nothing to reset */ }
   return null;
+}
+
+// The state-based half, like the floor watchdog: checkReviewGate reads the
+// command TEXT, so `bash -c 'git commit …'` (quotes stripped) dodged it. After
+// every Bash call, ask instead whether a FRESH commit of OURS landed in the cwd
+// repo while the tally is over the gate. Own HEAD cache, so it can't interfere
+// with checkCommitWithoutFloor's. Can't see a commit made in another repo via
+// `cd elsewhere && …` — the floor watchdog has the same limit.
+function reviewHeadState(input) { // { repoRoot, sha, cacheFile } for the cwd code repo, or null
+  const found = findGitDir(input?.cwd || process.cwd());
+  if (!found || !MANIFESTS.some((m) => existsSync(join(found.repoRoot, m)))) return null;
+  const sha = resolveHead(found.gitDir);
+  if (!sha) return null;
+  const repoKey = createHash('sha256').update(found.repoRoot).digest('hex').slice(0, 16);
+  return { repoRoot: found.repoRoot, sha, cacheFile: `${reviewTallyFile(input)}-head-${repoKey}` };
+}
+
+// Runs first in the bash role (PreToolUse): record where HEAD is if we haven't
+// yet. Without it, the canonical dodge — plain commit blocked (PostToolUse never
+// runs for a blocked call), then `bash -c` — was the post-bash check's FIRST
+// sighting, with nothing to compare against. Pure fs; never blocks.
+function seedReviewHead(input) {
+  const st = reviewHeadState(input);
+  if (st && !existsSync(st.cacheFile)) {
+    try { mkdirSync(METRICS_DIR, { recursive: true }); writeFileSync(st.cacheFile, st.sha); } catch { /* ignore */ }
+  }
+  return null;
+}
+
+function checkCommitWithoutReview(input) {
+  const st = reviewHeadState(input);
+  if (!st) return null;
+  let prev = null;
+  try { prev = readFileSync(st.cacheFile, 'utf8').trim(); } catch { /* first sighting */ }
+  try { mkdirSync(METRICS_DIR, { recursive: true }); writeFileSync(st.cacheFile, st.sha); } catch { /* ignore */ }
+  if (!prev || prev === st.sha) return null;
+
+  const lines = readTally(reviewTallyFile(input));
+  if (lines <= REVIEW_GATE_LINES) return null;
+  const git = (args) => execSync(`git ${args}`, { cwd: st.repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  let committedAt, committer, parents;
+  try {
+    [committedAt, committer, parents] = git('log -1 --format=%ct%x09%ce%x09%P').split('\t');
+  } catch { return null; }
+  if (Date.now() / 1000 - parseInt(committedAt, 10) > FRESH_COMMIT_WINDOW_S) return null; // a checkout
+  // Someone else's fresh commit arriving (git pull, reset to a remote) isn't
+  // ours to review — and "amend" would rewrite shared history.
+  let me = '';
+  try { me = git('config user.email'); } catch { /* unknown: keep flagging */ }
+  if (me && committer !== me) return null;
+
+  const isMerge = (parents || '').trim().split(/\s+/).length > 1;
+  return (
+    `REVIEW GATE: a commit just landed in ${st.repoRoot} with ${lines} lines of code unreviewed since the ` +
+    `last code-reviewer pass (gate: ${REVIEW_GATE_LINES}). It got past the pre-commit check; this one is ` +
+    'state-based, so how the command was spelled does not matter.\n' +
+    (isMerge
+      ? 'It is a merge commit: run the code-reviewer agent on the code this session changed, and fix what it finds in a follow-up commit.\n'
+      : 'Run the code-reviewer agent on it now (the diff is `git show HEAD`), fix what it finds, and amend the commit.\n')
+  );
 }
 
 function checkReviewGate(input) {
@@ -416,9 +482,11 @@ function checkReviewGate(input) {
 // ── dispatch ────────────────────────────────────────────────────────────────
 
 const ROLES = {
-  bash: { blockers: [checkNoVerify, checkFloor, checkReviewGate], advisory: [] },
+  bash: { blockers: [seedReviewHead, checkNoVerify, checkFloor, checkReviewGate], advisory: [] },
   edit: { blockers: [checkConfigProtection], advisory: [suggestCompact] },
-  'post-bash': { blockers: [checkCommitWithoutFloor], advisory: [] },
+  // collectAll: report every violation at once. A review flag deferred behind
+  // the floor's could expire (FRESH_COMMIT_WINDOW_S) while verify.sh runs.
+  'post-bash': { blockers: [checkCommitWithoutFloor, checkCommitWithoutReview], advisory: [], collectAll: true },
   'post-edit': { blockers: [], advisory: [tallyEdit] },
   agent: { blockers: [], advisory: [resetOnReview] },
 };
@@ -436,11 +504,19 @@ process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
   try {
     const input = JSON.parse(raw);
-    for (const check of role.blockers) {
-      const message = check(input);
-      if (message) {
-        process.stderr.write(message);
+    if (role.collectAll) {
+      const messages = role.blockers.map((check) => check(input)).filter(Boolean);
+      if (messages.length) {
+        process.stderr.write(messages.join('\n'));
         process.exit(2);
+      }
+    } else {
+      for (const check of role.blockers) {
+        const message = check(input);
+        if (message) {
+          process.stderr.write(message);
+          process.exit(2);
+        }
       }
     }
     for (const check of role.advisory) {

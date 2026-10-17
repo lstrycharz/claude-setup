@@ -26,7 +26,7 @@ These ship inside the plugin and run automatically in the background, stopping C
 | **Weakening your code rules** | Blocks Claude from editing linter/formatter/typecheck/test-runner configs — and the verification floor's own files. It has to fix the code, not loosen the rules. |
 | **Skipping safety checks** | Blocks `--no-verify` (and its `-n` short form, and `core.hooksPath` tricks) on git commands. Your secret scanner stays on. |
 | **Committing with no floor** | Blocks `git commit` in a code repo that has no executable pre-commit gate — so commits can't ship with nothing checking them. Points you at `/init-floor`. |
-| **Skipping the code review** | Blocks `git commit` once more than 20 lines of code changed since the last **code-reviewer** run — the review `workflow.md` calls mandatory is enforced, not left to memory. Docs and small edits pass; run the reviewer (or `/code-review`), fix what it finds, then commit. |
+| **Skipping the code review** | Blocks `git commit` once more than 20 lines of code changed since the last **code-reviewer** run — the review `workflow.md` calls mandatory is enforced, not left to memory. Docs and small edits pass; run the reviewer (or `/code-review`), fix what it finds, then commit. A commit that slips past (e.g. hidden in `bash -c '…'`) is caught right after it lands, however it was spelled. |
 | **Sneaking past the string checks** | A state-based watchdog runs *after* every terminal command: if a commit landed in a floorless repo — no matter how the command was spelled — Claude is told to verify and amend. |
 | **Running out of memory** | After 50 edits, suggests saving progress and freeing context with `/clear` or `/compact`. |
 
@@ -207,6 +207,13 @@ are gitignored by the `.claude/.gitignore` it installs).
 If instead it **refuses** and lists files, the project is genuinely already
 scaffolded — run `/update-floor` to refresh the infrastructure in place rather
 than deleting anything.
+
+**If it says `Can't write these — nothing was changed`,** that's the Claude
+app's sandbox. It protects `.git/hooks/` and `.claude/settings*.json` so Claude
+can't change its own permissions or plant hooks, and those are exactly what the
+scaffolder writes. It checks first and touches nothing, so there's no half-made
+setup to clean up. Run the command it prints in your own terminal, from the
+project folder, then come back to Claude for the next steps.
 
 ### Step 3: Start working
 

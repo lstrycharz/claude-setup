@@ -25,6 +25,7 @@ section() { echo ""; echo -e "${YELLOW}→ $1${NC}"; }
 cleanup() {
   [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null
   export HOME="$ORIG_HOME"
+  chmod -R u+w "$SANDBOX" 2>/dev/null   # read-only sandbox fixtures, if a run was interrupted
   rm -rf "$SANDBOX"
 }
 trap cleanup EXIT
@@ -86,6 +87,45 @@ grep -q 'gh pr comment' "$SCRIPT_DIR/template/ci/reviewer-github.yml" && pass "r
 # uv/poetry project doesn't silently no-op its Python checks (false green).
 grep -qiE 'python|uv|poetry' "$SCRIPT_DIR/template/ci/github-actions.yml" && pass "ci/github-actions.yml notes Python setup" || fail "ci/github-actions.yml has no Python setup note"
 grep -qiE 'python|uv|poetry' "$SCRIPT_DIR/template/ci/bitbucket-pipelines.yml" && pass "ci/bitbucket-pipelines.yml notes Python setup" || fail "ci/bitbucket-pipelines.yml has no Python setup note"
+# CI must install with the project's OWN package manager and lockfile, as
+# verify.sh runs with it. The templates did `npm install` on every repo, so a
+# pnpm/yarn/bun project resolved versions outside its lockfile in CI — the
+# false green verify.sh's header warns about (found on wealth-tracker, pnpm).
+INSTALL_DEPS="$SCRIPT_DIR/template/bin/install-deps.sh"
+deps_cmd() { # deps_cmd <files...> → the install command install-deps.sh picks there
+  local d; d=$(mktemp -d "$SANDBOX/deps-XXXX"); for f in "$@"; do : > "$d/$f"; done
+  ( cd "$d" && INSTALL_DEPS_DRY_RUN=1 bash "$INSTALL_DEPS" 2>/dev/null )
+}
+[ "$(deps_cmd package.json pnpm-lock.yaml)" = "→ corepack enable && pnpm install --frozen-lockfile" ] \
+  && pass "install-deps: pnpm-lock.yaml → pnpm, frozen" || fail "install-deps: pnpm project got: $(deps_cmd package.json pnpm-lock.yaml)"
+[ "$(deps_cmd package.json yarn.lock)" = "→ corepack enable && yarn install --frozen-lockfile" ] \
+  && pass "install-deps: yarn.lock (classic) → yarn, frozen" || fail "install-deps: yarn classic got: $(deps_cmd package.json yarn.lock)"
+[ "$(deps_cmd package.json yarn.lock .yarnrc.yml)" = "→ corepack enable && yarn install --immutable" ] \
+  && pass "install-deps: yarn berry (.yarnrc.yml) → yarn --immutable" || fail "install-deps: yarn berry got: $(deps_cmd package.json yarn.lock .yarnrc.yml)"
+[ "$(deps_cmd package.json bun.lock)" = "→ bun install --frozen-lockfile" ] && [ "$(deps_cmd package.json bun.lockb)" = "→ bun install --frozen-lockfile" ] \
+  && pass "install-deps: bun.lock / bun.lockb → bun, frozen" || fail "install-deps: bun project got: $(deps_cmd package.json bun.lock)"
+[ "$(deps_cmd package.json package-lock.json)" = "→ npm ci" ] && [ "$(deps_cmd package.json)" = "→ npm install" ] \
+  && pass "install-deps: package-lock.json → npm ci; no lockfile → npm install" || fail "install-deps: npm projects got: $(deps_cmd package.json package-lock.json) / $(deps_cmd package.json)"
+deps_cmd pyproject.toml | grep -q "nothing to install" && pass "install-deps: no package.json → installs nothing" || fail "install-deps: tried to install without a package.json"
+# Yarn 2+ declared via packageManager is berry even with no .yarnrc.yml (the
+# scaffolded .gitignore hides .yarnrc.yml, so CI may never see one).
+YB=$(mktemp -d "$SANDBOX/deps-XXXX"); printf '{"packageManager":"yarn@4.1.0"}\n' > "$YB/package.json"; : > "$YB/yarn.lock"
+[ "$( cd "$YB" && INSTALL_DEPS_DRY_RUN=1 bash "$INSTALL_DEPS" 2>/dev/null )" = "→ corepack enable && yarn install --immutable" ] \
+  && pass "install-deps: packageManager yarn@4 → --immutable" || fail "install-deps: yarn 4 via packageManager got --frozen-lockfile"
+# Without "packageManager", corepack runs ITS default pnpm/yarn, not yours — say so.
+PW=$(mktemp -d "$SANDBOX/deps-XXXX"); : > "$PW/package.json"; : > "$PW/pnpm-lock.yaml"
+( cd "$PW" && INSTALL_DEPS_DRY_RUN=1 bash "$INSTALL_DEPS" 2>&1 >/dev/null ) | grep -q "packageManager" \
+  && pass "install-deps: warns when pnpm/yarn version isn't pinned via packageManager" || fail "install-deps: silent about corepack's unpinned default version"
+# Missing tools fail loudly instead of installing nothing (bun; corepack, gone from Node 25).
+BN=$(mktemp -d "$SANDBOX/deps-XXXX"); : > "$BN/package.json"; : > "$BN/bun.lock"
+OUT=$( cd "$BN" && PATH=/usr/bin:/bin bash "$INSTALL_DEPS" 2>&1; echo "EXIT:$?" )
+echo "$OUT" | grep -qx "EXIT:1" && echo "$OUT" | grep -q "setup-bun" && pass "install-deps: bun lockfile without bun → exit 1, names setup-bun" || fail "install-deps: ran on with no bun installed"
+OUT=$( cd "$PW" && PATH=/usr/bin:/bin bash "$INSTALL_DEPS" 2>&1; echo "EXIT:$?" )
+echo "$OUT" | grep -qx "EXIT:1" && echo "$OUT" | grep -q "corepack isn't installed" && pass "install-deps: pnpm lockfile without corepack → exit 1, says why" || fail "install-deps: ran on with no corepack"
+for t in github-actions.yml bitbucket-pipelines.yml; do
+  grep -q "install-deps.sh" "$SCRIPT_DIR/template/ci/$t" && ! grep -q "npm install" "$SCRIPT_DIR/template/ci/$t" \
+    && pass "ci/$t installs via install-deps.sh (no bare npm install)" || fail "ci/$t still installs with npm regardless of the lockfile"
+done
 [ -f "$SCRIPT_DIR/commands/code-review.md" ] && pass "commands/code-review.md installed" || fail "commands/code-review.md missing"
 [ -f "$SCRIPT_DIR/commands/security-scan.md" ] && pass "commands/security-scan.md installed" || fail "commands/security-scan.md missing"
 [ -f "$SCRIPT_DIR/commands/logic-review.md" ] && pass "commands/logic-review.md installed" || fail "commands/logic-review.md missing"
@@ -355,6 +395,66 @@ echo "$A$B$C" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2.*EXIT:2" && pass "review ga
 OUT=$(echo "{\"tool_input\":{\"file_path\":\"$SANDBOX/.claude/metrics/.review-rg1\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "review gate: the tally file is protected from edits" || fail "review gate: the tally file can be edited to zero"
 
+# The PreToolUse gate reads the command TEXT, so `bash -c 'git commit …'`
+# (quotes stripped) slipped past. Like the floor watchdog, the post-bash check
+# is state-based: did a fresh commit land with unreviewed code? Spelling
+# doesn't matter.
+RGW="$SANDBOX/rg-watch"; rm -rf "$RGW"; mkdir -p "$RGW/src"
+( cd "$RGW" && git init -q && git config user.email t@e.com && git config user.name T && echo '{}' > package.json \
+  && GIT_AUTHOR_DATE="2020-01-01T00:00:00" GIT_COMMITTER_DATE="2020-01-01T00:00:00" git commit -q --allow-empty -m old \
+  && git branch oldtip )
+printf '#!/bin/sh\nexit 0\n' > "$RGW/.git/hooks/pre-commit"; chmod +x "$RGW/.git/hooks/pre-commit"   # floor wired: only the review check speaks
+rg_post() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RGW\",\"tool_input\":{\"command\":\"bash -c 'git commit -m x'\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash 2>&1; echo "EXIT:$?"; }
+rg_commit() { ( cd "$RGW" && echo "$RANDOM" >> src/f.js && git add -A && git commit -q -m c ); }
+rg_write() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RGW\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$RGW/src/a.js\",\"content\":$(lines "$2")}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1; }
+
+rg_write rgw1 25; rg_post rgw1 >/dev/null              # first sighting initializes the HEAD cache
+rg_commit; OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:2" && echo "$OUT" | grep -q "code-reviewer" \
+  && pass "review gate: a commit that dodged the pre-commit check (bash -c) is caught after it lands" || fail "review gate: a bash -c commit with 25 unreviewed lines went unnoticed"
+OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: an unchanged HEAD isn't flagged twice" || fail "review gate: re-flagged the same commit"
+echo "{\"session_id\":\"rgw1\",\"cwd\":\"$RGW\",\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"code-reviewer\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" agent >/dev/null 2>&1
+rg_commit; OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: a commit after a code-reviewer run isn't flagged" || fail "review gate: flagged a commit after the review"
+rg_write rgw2 5; rg_post rgw2 >/dev/null; rg_commit; OUT=$(rg_post rgw2)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: a small unreviewed commit isn't flagged" || fail "review gate: flagged a sub-threshold commit"
+rg_write rgw3 25; rg_post rgw3 >/dev/null; ( cd "$RGW" && git checkout -q oldtip 2>/dev/null ); OUT=$(rg_post rgw3)
+( cd "$RGW" && git checkout -q - 2>/dev/null )
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: checking out an old commit isn't mistaken for a new one" || fail "review gate: flagged a checkout as a fresh commit"
+# The HEAD cache must survive a review, or the next dodge is a "first sighting".
+rg_write rgw1 25; rg_commit; OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: a dodge after an earlier review is still caught" || fail "review gate: the review reset hid the next dodge"
+# The canonical dodge: the plain commit is blocked (PreToolUse — PostToolUse never
+# runs for it), then `bash -c` lands as the session's FIRST post-bash sighting.
+# The blocked call must already have recorded where HEAD was.
+rg_write rgw4 25
+echo "{\"session_id\":\"rgw4\",\"cwd\":\"$RGW\",\"tool_input\":{\"command\":\"git commit -m x\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" bash >/dev/null 2>&1
+rg_commit; OUT=$(rg_post rgw4)
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: blocked commit → bash -c retry is caught even as the first sighting" || fail "review gate: the blocked-then-bash-c dodge got through"
+# Someone else's fresh commit arriving (git pull / reset) isn't ours to review —
+# and "amend" would rewrite shared history.
+rg_write rgw5 25; rg_post rgw5 >/dev/null
+( cd "$RGW" && echo x >> src/f.js && git add -A && GIT_COMMITTER_EMAIL=other@e.com GIT_AUTHOR_EMAIL=other@e.com git commit -q -m theirs )
+OUT=$(rg_post rgw5)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: someone else's fresh commit (pull/reset) isn't flagged" || fail "review gate: flagged a colleague's commit and said to amend it"
+# A merge commit gets the right advice: not "amend".
+( cd "$RGW" && git checkout -q -b side && echo y >> src/g.js && git add -A && git commit -q -m side && git checkout -q - )
+rg_write rgw6 25; rg_post rgw6 >/dev/null
+( cd "$RGW" && git merge -q --no-ff side -m merge )
+OUT=$(rg_post rgw6)
+echo "$OUT" | grep -q "EXIT:2" && echo "$OUT" | grep -qi "merge" && ! echo "$OUT" | grep -q "amend the commit" \
+  && pass "review gate: a merge commit is flagged without telling Claude to amend it" || fail "review gate: merge commit got 'amend' advice (or wasn't flagged)"
+# Floor AND review violated by the same commit: both said at once — a delayed
+# review flag can expire while the floor's fix (verify.sh) runs.
+RGF="$SANDBOX/rg-nofloor"; rm -rf "$RGF"; mkdir -p "$RGF/src"
+( cd "$RGF" && git init -q && git config user.email t@e.com && git config user.name T && echo '{}' > package.json && git add -A && git commit -q -m init )
+echo "{\"session_id\":\"rgf1\",\"cwd\":\"$RGF\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$RGF/src/a.js\",\"content\":$(lines 25)}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1
+echo "{\"session_id\":\"rgf1\",\"cwd\":\"$RGF\",\"tool_input\":{\"command\":\"x\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash >/dev/null 2>&1
+( cd "$RGF" && echo z >> src/a.js && git add -A && git commit -q -m c )
+OUT=$(echo "{\"session_id\":\"rgf1\",\"cwd\":\"$RGF\",\"tool_input\":{\"command\":\"x\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash 2>&1; echo "EXIT:$?")
+echo "$OUT" | grep -q "FLOOR VIOLATION" && echo "$OUT" | grep -q "REVIEW GATE" && pass "review gate: floor and review violations are reported together" || fail "review gate: the review flag waited behind the floor's"
+
 node -e "
 const h = require('$SCRIPT_DIR/hooks/hooks.json').hooks.PostToolUse || [];
 process.exit(h.some(e => /\bEdit\b/.test(e.matcher) && /\bWrite\b/.test(e.matcher) && /\bMultiEdit\b/.test(e.matcher) && /\bNotebookEdit\b/.test(e.matcher) && e.hooks.some(x => x.command.includes('dispatch.mjs post-edit'))) ? 0 : 1)" \
@@ -429,6 +529,13 @@ touch "$R/pnpm-lock.yaml"
 run_verify "$R"
 grep -q '^pnpm ' "$SHIMLOG" && pass "verify: uses pnpm when pnpm-lock.yaml present" || fail "verify: did not use pnpm for a pnpm repo"
 grep -q '^npm '  "$SHIMLOG" && fail "verify: fell back to npm despite pnpm-lock.yaml" || pass "verify: does not invoke npm when pnpm is the manager"
+# bun.lock (text) is bun's default lockfile since 1.2; bun.lockb is legacy.
+reset_shims; mkshim bun; mkshim npm
+R="$SANDBOX/v-bun"; mkdir -p "$R"
+printf '{ "scripts": { "lint": "x", "test": "x" } }\n' > "$R/package.json"
+touch "$R/bun.lock"
+run_verify "$R"
+grep -q '^bun ' "$SHIMLOG" && ! grep -q '^npm ' "$SHIMLOG" && pass "verify: uses bun for a bun.lock project" || fail "verify: ran npm for a bun.lock project"
 
 # --- Node: no lockfile → npm default ---
 reset_shims; mkshim pnpm; mkshim npm
@@ -915,6 +1022,7 @@ git config user.name Test
 
 [ -d "$PROJECT/.claude" ] && pass "init-claude creates .claude/" || fail "init-claude did not create .claude/"
 [ -f "$PROJECT/.claude/CLAUDE.md" ] && pass "init-claude copies CLAUDE.md" || fail "init-claude did not copy CLAUDE.md"
+[ -f "$PROJECT/.claude/bin/install-deps.sh" ] && pass "init-claude ships .claude/bin/install-deps.sh (the CI templates call it)" || fail "init-claude did not ship install-deps.sh"
 [ -f "$PROJECT/.gitignore" ] && pass "init-claude creates .gitignore when missing" || fail "init-claude did not create .gitignore"
 [ -x "$PROJECT/.git/hooks/pre-commit" ] && pass "init-claude installs pre-commit hook" || fail "init-claude did not install pre-commit hook"
 [ -x "$PROJECT/.git/hooks/pre-push" ] && pass "init-claude installs pre-push hook (full floor)" || fail "init-claude did not install pre-push hook"
@@ -1151,6 +1259,8 @@ echo "OLD-SENTINEL" > .claude/bin/review-diff.mjs
 echo "OLD-PROMPT"   > .claude/review/logic-reviewer.md
 "$SCRIPT_DIR/bin/update-claude" > "$LOGS"/uc-run.log 2>&1
 grep -q "OLD-SENTINEL" .claude/bin/review-diff.mjs && fail "update-claude did not refresh review-diff.mjs" || pass "update-claude refreshes the reviewer code"
+echo "OLD-DEPS" > .claude/bin/install-deps.sh; "$SCRIPT_DIR/bin/update-claude" > "$LOGS"/uc-deps.log 2>&1
+grep -q "OLD-DEPS" .claude/bin/install-deps.sh && fail "update-claude did not refresh install-deps.sh" || pass "update-claude refreshes install-deps.sh"
 grep -q "OLD-PROMPT" .claude/review/logic-reviewer.md && fail "update-claude did not refresh the prompt" || pass "update-claude refreshes the reviewer prompt"
 
 # Preserves a customized verify.sh — never clobbers your project's commands.
@@ -1195,6 +1305,87 @@ printf '{ "scripts": { "test": "x" } }\n' > "$LEDG/package.json"
 printf '| 2026-01-01 | #999 | model-x | correctness | sentinel row | false-positive | kept? |\n' >> "$LEDG/.claude/review-ledger.md"
 ( cd "$LEDG" && "$SCRIPT_DIR/bin/update-claude" ) > "$LOGS"/update-ledger.log 2>&1
 grep -q "sentinel row" "$LEDG/.claude/review-ledger.md" && pass "update-claude preserves accumulated ledger rows" || fail "update-claude wiped the ledger (accumulated data lost)"
+cd "$SANDBOX"
+
+# ============================================================
+# SECTION: setup under the app's sandbox
+# ============================================================
+# In the Claude desktop app, Bash runs sandboxed, and the sandbox protects
+# .git/hooks/ and .claude/settings*.json — exactly what the scaffolder writes.
+# A real /init-floor run (2026-10-16) was cut short there, leaving a partial
+# .claude/ that Claude then rebuilt by hand. A read-only directory stands in for
+# the sandbox's denial: to the script both are "can't write here".
+section "setup under the app's sandbox"
+
+# init-claude: check BEFORE writing — a denied write means nothing is touched.
+SBX="$SANDBOX/sbx-hooks"; rm -rf "$SBX"; mkdir -p "$SBX"; ( cd "$SBX" && git init -q && echo '{}' > package.json )
+chmod 555 "$SBX/.git/hooks"
+OUT=$( cd "$SBX" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+chmod 755 "$SBX/.git/hooks"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -qi "sandbox" && echo "$OUT" | grep -qF "cd \"$SBX\" && bash" && echo "$OUT" | grep -q "bin/init-claude" \
+   && [ ! -e "$SBX/.claude/CLAUDE.md" ] && [ ! -e "$SBX/.gitignore" ]; then
+  pass "init-claude: unwritable .git/hooks → clear sandbox message, the command to run, nothing written"
+else
+  fail "init-claude: unwritable .git/hooks left a partial scaffold or no clear message"
+fi
+SBX2="$SANDBOX/sbx-settings"; rm -rf "$SBX2"; mkdir -p "$SBX2/.claude/.cc-writes"; ( cd "$SBX2" && git init -q && echo '{}' > package.json )
+chmod 555 "$SBX2/.claude"
+OUT=$( cd "$SBX2" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+chmod 755 "$SBX2/.claude"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -q "settings.json" && echo "$OUT" | grep -qi "sandbox" && echo "$OUT" | grep -q "nothing was changed" && [ ! -e "$SBX2/.gitignore" ] && [ ! -e "$SBX2/.git/hooks/pre-commit" ]; then
+  pass "init-claude: unwritable .claude/settings.json → names it, nothing written"
+else
+  fail "init-claude: unwritable settings path left a partial scaffold or didn't name it"
+fi
+# Regression guard: the check itself must leave no probe files behind.
+SBX3="$SANDBOX/sbx-ok"; rm -rf "$SBX3"; mkdir -p "$SBX3"; ( cd "$SBX3" && git init -q && echo '{}' > package.json )
+( cd "$SBX3" && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/sbx-ok.log 2>&1
+[ -x "$SBX3/.git/hooks/pre-commit" ] && [ -z "$(ls -A "$SBX3/.git/hooks" | grep -i probe)" ] \
+  && pass "init-claude: the write check leaves no probe files behind" || fail "init-claude: probe file left behind, or hooks not installed"
+
+# W1: an existing hook init-claude would overwrite, but can't, is caught up
+# front — not reported as "✅ installed" while the old hook stays.
+SBX4="$SANDBOX/sbx-ro-hook"; rm -rf "$SBX4"; mkdir -p "$SBX4"; ( cd "$SBX4" && git init -q && echo '{}' > package.json )
+echo "OLD HOOK" > "$SBX4/.git/hooks/pre-commit"; chmod 444 "$SBX4/.git/hooks/pre-commit"
+OUT=$( cd "$SBX4" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+chmod 644 "$SBX4/.git/hooks/pre-commit"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -q ".git/hooks/pre-commit" && ! echo "$OUT" | grep -q "Git hooks installed" && [ ! -e "$SBX4/.claude/CLAUDE.md" ]; then
+  pass "init-claude: an existing hook it can't overwrite is caught before writing anything"
+else
+  fail "init-claude: claimed hooks installed while an unwritable old hook stayed"
+fi
+# W2: a repo with no .git/hooks/ directory isn't a sandbox problem — create it.
+SBX5="$SANDBOX/sbx-no-hooks-dir"; rm -rf "$SBX5"; mkdir -p "$SBX5"; ( cd "$SBX5" && git init -q && echo '{}' > package.json && rm -rf .git/hooks )
+OUT=$( cd "$SBX5" && "$SCRIPT_DIR/bin/init-claude" 2>&1; echo "EXIT:$?" )
+if echo "$OUT" | grep -q "EXIT:0" && [ -x "$SBX5/.git/hooks/pre-commit" ] && ! echo "$OUT" | grep -qi "sandbox"; then
+  pass "init-claude: a missing .git/hooks/ is created, not misdiagnosed as the sandbox"
+else
+  fail "init-claude: a missing .git/hooks/ was blamed on the sandbox (or hooks not installed)"
+fi
+
+# update-claude: a hook it can't install is said out loud, not skipped quietly.
+UCS="$SANDBOX/ucs"; rm -rf "$UCS"; mkdir -p "$UCS"; ( cd "$UCS" && git init -q && echo '{}' > package.json && "$SCRIPT_DIR/bin/init-claude" ) > "$LOGS"/ucs-init.log 2>&1
+rm -f "$UCS/.git/hooks/pre-commit" "$UCS/.git/hooks/pre-push"; chmod 555 "$UCS/.git/hooks"
+OUT=$( cd "$UCS" && "$SCRIPT_DIR/bin/update-claude" 2>&1; echo "EXIT:$?" )
+chmod 755 "$UCS/.git/hooks"
+if echo "$OUT" | grep -q "EXIT:1" && echo "$OUT" | grep -qi "sandbox" && echo "$OUT" | grep -qF "cd \"$UCS\" && bash" && echo "$OUT" | grep -q "bin/update-claude"; then
+  pass "update-claude: an uninstallable hook → exit 1, sandbox message, the command to run"
+else
+  fail "update-claude: an uninstallable hook was skipped quietly"
+fi
+
+# update-claude adds the calibration ledger to projects scaffolded before it existed.
+rm -f "$UCS/.claude/review-ledger.md"
+( cd "$UCS" && "$SCRIPT_DIR/bin/update-claude" ) > "$LOGS"/ucs-ledger.log 2>&1
+[ -f "$UCS/.claude/review-ledger.md" ] && pass "update-claude adds a missing review-ledger.md" || fail "update-claude never adds the ledger to older projects"
+
+# The commands tell Claude to run the script once, unsandboxed — and to stop,
+# not rebuild the scaffold by hand, if that's refused.
+grep -qi "sandbox" "$SCRIPT_DIR/commands/init-floor.md" && grep -qi "by hand" "$SCRIPT_DIR/commands/init-floor.md" \
+  && pass "/init-floor: run once outside the sandbox; never rebuild it by hand" || fail "/init-floor says nothing about the sandbox"
+grep -qi "sandbox" "$SCRIPT_DIR/commands/update-floor.md" && pass "/update-floor mentions the sandbox for hooks" || fail "/update-floor says nothing about the sandbox"
+grep -q "refuses to touch an existing" "$SCRIPT_DIR/commands/init-floor.md" \
+  && fail "/init-floor still claims it refuses any existing .claude/ (stale since v1.1.2)" || pass "/init-floor describes the current .claude/ handling"
 cd "$SANDBOX"
 
 # ============================================================

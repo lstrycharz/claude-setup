@@ -14,12 +14,12 @@ pipelines:
       - step:
           name: verify
           script:
-            - if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; fi
+            - bash .claude/bin/install-deps.sh   # the project's own package manager + lockfile, frozen
             - bash .claude/verify.sh
   branches:
     develop:
       - step:
           name: verify
           script:
-            - if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; fi
+            - bash .claude/bin/install-deps.sh   # the project's own package manager + lockfile, frozen
             - bash .claude/verify.sh

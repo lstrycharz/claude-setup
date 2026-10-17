@@ -72,9 +72,56 @@ if [ -d ".claude" ]; then
     echo "   To re-scaffold from scratch: remove .claude/ first (back up CLAUDE.md and PROGRESS.md)."
     exit 1
   fi
-  echo "ℹ️  .claude/ exists but holds no scaffolding (e.g. only the app's own files) — scaffolding into it."
+  scaffold_into_existing=1
 fi
 
+# ── Pre-flight: can we write what the Claude app's sandbox protects? ─────────
+# In the desktop app, Bash runs sandboxed, and .git/hooks/ and
+# .claude/settings*.json are protected so Claude can't change its own
+# permissions or plant hooks — exactly what this script writes. A denied write
+# mid-copy left a partial scaffold that then had to be finished by hand
+# (2026-10-16). So test those paths FIRST, and change nothing if any is denied.
+probe_create() { # true if $1 already exists (we won't write it) or can be created
+  [ -e "$1" ] && return 0
+  ( : > "$1" ) 2>/dev/null || return 1
+  rm -f "$1" 2>/dev/null || { echo "⚠️  couldn't remove probe file $1 — delete it before re-running."; return 1; }
+}
+probe_overwrite() { # true if $1 is absent, or present and writable (append-open: changes nothing)
+  [ -e "$1" ] || return 0
+  ( : >> "$1" ) 2>/dev/null
+}
+made_claude_dir=0
+[ -d .claude ] || { mkdir .claude 2>/dev/null && made_claude_dir=1; }
+denied=""
+for f in .claude/settings.json .claude/settings.local.json; do
+  probe_create "$f" || denied="$denied      $f
+"
+done
+if [ -d ".git" ]; then
+  # git doesn't need hooks/ to pre-exist, and its absence isn't the sandbox.
+  mkdir -p .git/hooks 2>/dev/null
+  probe=".git/hooks/.init-claude-probe-$$"
+  probe_create "$probe" || denied="$denied      .git/hooks/
+"
+  # The hooks are overwritten below, so an existing one must be writable too.
+  for h in pre-commit pre-push; do
+    probe_overwrite ".git/hooks/$h" || denied="$denied      .git/hooks/$h (exists, not writable)
+"
+  done
+fi
+if [ -n "$denied" ]; then
+  [ "$made_claude_dir" -eq 1 ] && rmdir .claude 2>/dev/null
+  echo "❌ Can't write these — nothing was changed:"
+  printf '%s' "$denied"
+  echo "   Most likely cause: in the Claude desktop app, Bash runs in a sandbox that"
+  echo "   protects them (so Claude can't change its own permissions or plant git hooks)."
+  echo "   Run the scaffolder once outside the sandbox — paste this into a terminal:"
+  echo "     cd \"$PWD\" && bash \"$SCRIPT_DIR/$(basename "$0")\""
+  exit 1
+fi
+
+[ "${scaffold_into_existing:-0}" -eq 1 ] && \
+  echo "ℹ️  .claude/ exists but holds no scaffolding (e.g. only the app's own files) — scaffolding into it."
 mkdir -p .claude
 # "$TEMPLATE/." (not "$TEMPLATE") so the CONTENTS merge into an existing
 # .claude/; `cp -r "$TEMPLATE" .claude` would nest a whole copy of the template
