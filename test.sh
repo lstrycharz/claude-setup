@@ -395,6 +395,66 @@ echo "$A$B$C" | tr -d '\n' | grep -q "EXIT:0.*EXIT:2.*EXIT:2" && pass "review ga
 OUT=$(echo "{\"tool_input\":{\"file_path\":\"$SANDBOX/.claude/metrics/.review-rg1\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" edit 2>/dev/null; echo "EXIT:$?")
 echo "$OUT" | grep -q "EXIT:2" && pass "review gate: the tally file is protected from edits" || fail "review gate: the tally file can be edited to zero"
 
+# The PreToolUse gate reads the command TEXT, so `bash -c 'git commit …'`
+# (quotes stripped) slipped past. Like the floor watchdog, the post-bash check
+# is state-based: did a fresh commit land with unreviewed code? Spelling
+# doesn't matter.
+RGW="$SANDBOX/rg-watch"; rm -rf "$RGW"; mkdir -p "$RGW/src"
+( cd "$RGW" && git init -q && git config user.email t@e.com && git config user.name T && echo '{}' > package.json \
+  && GIT_AUTHOR_DATE="2020-01-01T00:00:00" GIT_COMMITTER_DATE="2020-01-01T00:00:00" git commit -q --allow-empty -m old \
+  && git branch oldtip )
+printf '#!/bin/sh\nexit 0\n' > "$RGW/.git/hooks/pre-commit"; chmod +x "$RGW/.git/hooks/pre-commit"   # floor wired: only the review check speaks
+rg_post() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RGW\",\"tool_input\":{\"command\":\"bash -c 'git commit -m x'\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash 2>&1; echo "EXIT:$?"; }
+rg_commit() { ( cd "$RGW" && echo "$RANDOM" >> src/f.js && git add -A && git commit -q -m c ); }
+rg_write() { echo "{\"session_id\":\"$1\",\"cwd\":\"$RGW\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$RGW/src/a.js\",\"content\":$(lines "$2")}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1; }
+
+rg_write rgw1 25; rg_post rgw1 >/dev/null              # first sighting initializes the HEAD cache
+rg_commit; OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:2" && echo "$OUT" | grep -q "code-reviewer" \
+  && pass "review gate: a commit that dodged the pre-commit check (bash -c) is caught after it lands" || fail "review gate: a bash -c commit with 25 unreviewed lines went unnoticed"
+OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: an unchanged HEAD isn't flagged twice" || fail "review gate: re-flagged the same commit"
+echo "{\"session_id\":\"rgw1\",\"cwd\":\"$RGW\",\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"code-reviewer\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" agent >/dev/null 2>&1
+rg_commit; OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: a commit after a code-reviewer run isn't flagged" || fail "review gate: flagged a commit after the review"
+rg_write rgw2 5; rg_post rgw2 >/dev/null; rg_commit; OUT=$(rg_post rgw2)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: a small unreviewed commit isn't flagged" || fail "review gate: flagged a sub-threshold commit"
+rg_write rgw3 25; rg_post rgw3 >/dev/null; ( cd "$RGW" && git checkout -q oldtip 2>/dev/null ); OUT=$(rg_post rgw3)
+( cd "$RGW" && git checkout -q - 2>/dev/null )
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: checking out an old commit isn't mistaken for a new one" || fail "review gate: flagged a checkout as a fresh commit"
+# The HEAD cache must survive a review, or the next dodge is a "first sighting".
+rg_write rgw1 25; rg_commit; OUT=$(rg_post rgw1)
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: a dodge after an earlier review is still caught" || fail "review gate: the review reset hid the next dodge"
+# The canonical dodge: the plain commit is blocked (PreToolUse — PostToolUse never
+# runs for it), then `bash -c` lands as the session's FIRST post-bash sighting.
+# The blocked call must already have recorded where HEAD was.
+rg_write rgw4 25
+echo "{\"session_id\":\"rgw4\",\"cwd\":\"$RGW\",\"tool_input\":{\"command\":\"git commit -m x\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" bash >/dev/null 2>&1
+rg_commit; OUT=$(rg_post rgw4)
+echo "$OUT" | grep -q "EXIT:2" && pass "review gate: blocked commit → bash -c retry is caught even as the first sighting" || fail "review gate: the blocked-then-bash-c dodge got through"
+# Someone else's fresh commit arriving (git pull / reset) isn't ours to review —
+# and "amend" would rewrite shared history.
+rg_write rgw5 25; rg_post rgw5 >/dev/null
+( cd "$RGW" && echo x >> src/f.js && git add -A && GIT_COMMITTER_EMAIL=other@e.com GIT_AUTHOR_EMAIL=other@e.com git commit -q -m theirs )
+OUT=$(rg_post rgw5)
+echo "$OUT" | grep -q "EXIT:0" && pass "review gate: someone else's fresh commit (pull/reset) isn't flagged" || fail "review gate: flagged a colleague's commit and said to amend it"
+# A merge commit gets the right advice: not "amend".
+( cd "$RGW" && git checkout -q -b side && echo y >> src/g.js && git add -A && git commit -q -m side && git checkout -q - )
+rg_write rgw6 25; rg_post rgw6 >/dev/null
+( cd "$RGW" && git merge -q --no-ff side -m merge )
+OUT=$(rg_post rgw6)
+echo "$OUT" | grep -q "EXIT:2" && echo "$OUT" | grep -qi "merge" && ! echo "$OUT" | grep -q "amend the commit" \
+  && pass "review gate: a merge commit is flagged without telling Claude to amend it" || fail "review gate: merge commit got 'amend' advice (or wasn't flagged)"
+# Floor AND review violated by the same commit: both said at once — a delayed
+# review flag can expire while the floor's fix (verify.sh) runs.
+RGF="$SANDBOX/rg-nofloor"; rm -rf "$RGF"; mkdir -p "$RGF/src"
+( cd "$RGF" && git init -q && git config user.email t@e.com && git config user.name T && echo '{}' > package.json && git add -A && git commit -q -m init )
+echo "{\"session_id\":\"rgf1\",\"cwd\":\"$RGF\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$RGF/src/a.js\",\"content\":$(lines 25)}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-edit >/dev/null 2>&1
+echo "{\"session_id\":\"rgf1\",\"cwd\":\"$RGF\",\"tool_input\":{\"command\":\"x\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash >/dev/null 2>&1
+( cd "$RGF" && echo z >> src/a.js && git add -A && git commit -q -m c )
+OUT=$(echo "{\"session_id\":\"rgf1\",\"cwd\":\"$RGF\",\"tool_input\":{\"command\":\"x\"}}" | node "$SCRIPT_DIR/hooks/dispatch.mjs" post-bash 2>&1; echo "EXIT:$?")
+echo "$OUT" | grep -q "FLOOR VIOLATION" && echo "$OUT" | grep -q "REVIEW GATE" && pass "review gate: floor and review violations are reported together" || fail "review gate: the review flag waited behind the floor's"
+
 node -e "
 const h = require('$SCRIPT_DIR/hooks/hooks.json').hooks.PostToolUse || [];
 process.exit(h.some(e => /\bEdit\b/.test(e.matcher) && /\bWrite\b/.test(e.matcher) && /\bMultiEdit\b/.test(e.matcher) && /\bNotebookEdit\b/.test(e.matcher) && e.hooks.some(x => x.command.includes('dispatch.mjs post-edit'))) ? 0 : 1)" \
