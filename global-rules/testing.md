@@ -1,3 +1,10 @@
+---
+# Code files and stack manifests — every language the floor (verify.sh,
+# dispatch.mjs MANIFESTS) knows about, plus notebooks for analysis work.
+paths:
+  - "**/*.{py,ipynb,ts,tsx,js,jsx,mjs,cjs,sh,sql,go,rs,java,kt,rb}"
+  - "**/{package.json,pyproject.toml,setup.py,go.mod,Cargo.toml,pom.xml,build.gradle,build.gradle.kts}"
+---
 # Testing Rules
 
 ## Python (pytest)

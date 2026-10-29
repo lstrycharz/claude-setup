@@ -17,7 +17,7 @@ OUR_HOOKS=(dispatch.mjs config-protection.mjs block-no-verify.mjs suggest-compac
 OUR_COMMANDS=(code-review.md security-scan.md logic-review.md)
 OUR_AGENTS=(code-reviewer.md security-reviewer.md)
 OUR_RULES=(workflow.md qa.md testing.md code-style.md security.md agent-design.md)
-OUR_PLAYBOOKS=(AGENT_PROJECT_PLAYBOOK.md)
+OUR_PLAYBOOKS=(AGENT_PROJECT_PLAYBOOK.md COLLABORATION_PLAYBOOK.md)
 
 # 1. Remove our hooks
 echo "→ Removing hooks from ~/.claude/hooks/"

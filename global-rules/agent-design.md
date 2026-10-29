@@ -1,3 +1,10 @@
+---
+# Code files and stack manifests — every language the floor (verify.sh,
+# dispatch.mjs MANIFESTS) knows about, plus notebooks for analysis work.
+paths:
+  - "**/*.{py,ipynb,ts,tsx,js,jsx,mjs,cjs,sh,sql,go,rs,java,kt,rb}"
+  - "**/{package.json,pyproject.toml,setup.py,go.mod,Cargo.toml,pom.xml,build.gradle,build.gradle.kts}"
+---
 # AI-Agent / LLM-Pipeline Project Design
 
 ## When to apply this rule
@@ -12,7 +19,7 @@ Three **separable** layers — *not* a single stack to adopt all at once:
 
 Apply in order — never skip 1 or 2 to reach 3. Most projects need 1, many need 1+2, few need all three.
 
-Full playbook: `~/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md`. **Walk it during plan mode** at agent project kickoff — decide which layers apply, record "n/a, because…" for any you skip.
+Full playbook: `~/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md`. **Read it at agent project kickoff** — decide which layers apply, record "n/a, because…" for any you skip.
 
 ## Non-negotiables per layer
 

@@ -101,6 +101,11 @@ Type these in Claude Code whenever you want a second opinion:
 - **`/security-scan`** — Scans your whole project for security vulnerabilities (leaked secrets, injection risks, auth problems). Based on the OWASP Top 10.
 - **`/logic-review`** — Runs the cross-vendor reviewer on your current changes, then fixes the *real* findings with you reviewing each step (RED-green, surgical, never auto-commits).
 
+Two for non-code work (dashboards, analyses, boss-facing docs):
+
+- **`/deepen`** — Before starting, asks what a top professional would do, start from, use, and accept as proof, then rewrites your brief to ask for that.
+- **`/red-team`** — Three fresh-context critics (numbers, reasoning, reader) attack a finished deliverable; a separate judge keeps only the valid findings. For high-stakes work only.
+
 And two for the floor itself:
 
 - **`/init-floor`** — Scaffolds a new project's floor: `.claude/`, `verify.sh`, `.gitignore`, and the pre-commit + pre-push hooks.
@@ -141,8 +146,8 @@ That gives you the hooks, the slash commands (`/code-review`, `/init-floor`, …
 the agents, and the project template — versioned, updatable, and removable as
 one unit, without ever touching your `settings.json`.
 
-Then install the global rules (the one part plugins don't cover — they're
-auto-loaded from `~/.claude/rules` into every session):
+Then install the global rules (the one part plugins don't cover — they live in
+`~/.claude/rules` and load when Claude touches code files under the directory it was started in, not into every session; `claude --debug` shows which rules loaded):
 
 ```bash
 git clone https://github.com/lstrycharz/claude-setup.git
@@ -217,11 +222,11 @@ project folder, then come back to Claude for the next steps.
 
 ### Step 3: Start working
 
-Open Claude Code and enter plan mode. On your first planning session, Claude will automatically fill in your project's `CLAUDE.md` with the tech stack, commands, and project structure you discussed. You review it, confirm, and you're set.
+Open Claude Code and give it the first task as a brief: the task, the guardrails, and what done looks like. Use plan mode only if the approach is genuinely unclear. In that first session, Claude will automatically fill in your project's `CLAUDE.md` with the tech stack, commands, and project structure you discussed. You review it, confirm, and you're set.
 
 From then on, every Claude session in that project will:
 1. Read the project instructions
-2. Follow the global rules (testing, security, code style)
+2. Load the global rules (testing, security, code style) as soon as it touches code
 3. Get blocked by hooks if it tries something unsafe
 4. Track progress for the next session
 
@@ -271,7 +276,8 @@ claude-setup/
 │   └── frontend/
 │       └── react.md           # React-specific patterns
 ├── playbooks/                 # Long-form references (pulled when needed, not auto-loaded)
-│   └── AGENT_PROJECT_PLAYBOOK.md  # Companion to agent-design.md (~270 lines)
+│   ├── AGENT_PROJECT_PLAYBOOK.md  # Companion to agent-design.md (~270 lines)
+│   └── COLLABORATION_PLAYBOOK.md  # Pair vs delegation modes, delegation template, anti-patterns
 ├── hooks/                     # Automatic safety guardrails (ship inside the plugin)
 │   ├── hooks.json             # Wires the dispatcher into Claude Code's hook events
 │   └── dispatch.mjs           # One process per event: config protection, no-verify guard,
@@ -280,6 +286,8 @@ claude-setup/
 │   ├── code-review.md         # /code-review
 │   ├── security-scan.md       # /security-scan
 │   ├── logic-review.md        # /logic-review (cross-vendor review + supervised fix)
+│   ├── deepen.md              # /deepen (rewrite a brief the way a top pro would approach it)
+│   ├── red-team.md            # /red-team (three fresh-context critics + a judge, for high-stakes work)
 │   ├── init-floor.md          # /init-floor — scaffold a new project's floor
 │   └── update-floor.md        # /update-floor — refresh a project's floor infrastructure
 ├── agents/                    # Specialized sub-agents (ship inside the plugin)
@@ -411,8 +419,8 @@ installed in specific repos — remove those manually where needed.
 
 | Rule file | What it tells Claude |
 |---|---|
-| `workflow.md` | Plan before building. Work in small chunks. Commit often. Track progress between sessions. Don't skip verification. |
-| `qa.md` | Always write a failing test first. Then make it pass. Then clean up. No exceptions. |
+| `workflow.md` | Start from a brief: task, guardrails, done-when. Plan mode only when the approach is unclear. Work in small chunks. Commit often. Track progress between sessions. Never let the writing session be its own judge. |
+| `qa.md` | For code that ships or runs repeatedly: failing test first, then make it pass, then clean up. One-off analysis scripts skip TDD but must reconcile their numbers with the source data via a check script. |
 | `testing.md` | How to write tests for Python (pytest), TypeScript (vitest), and browsers (Playwright). Keep them fast and deterministic. |
 | `code-style.md` | Functions under 30 lines. Clear names. Explicit types. Composition over inheritance. Deep modules over shallow. |
 | `security.md` | Never hardcode secrets. Validate all input. Prevent SQL injection, XSS, and SSRF. Check auth on every request. |
@@ -425,6 +433,7 @@ Some content is too long for the ambient rule layer but useful to have available
 
 | Playbook | When Claude pulls it |
 |----------|---------------------|
-| `AGENT_PROJECT_PLAYBOOK.md` | Plan mode at the start of an agent / LLM-pipeline project. The 50-line `agent-design.md` rule points to it. ~270 lines of detail on the three-layer framework, with worked examples from GEOQuery. |
+| `AGENT_PROJECT_PLAYBOOK.md` | Read at the start of an agent / LLM-pipeline project. The 50-line `agent-design.md` rule points to it. ~270 lines of detail on the three-layer framework, with worked examples from GEOQuery. |
+| `COLLABORATION_PLAYBOOK.md` | When deciding how to hand a task to Claude: pair vs delegation mode, the delegation template, and the anti-patterns. Human-facing guidance, moved out of the code-scoped rule. |
 
-This is the push-vs-pull pattern: short principles **push** every session via rules; deep references **pull** only when needed.
+This is the push-vs-pull pattern: short principles **push** into coding sessions via path-scoped rules; deep references **pull** only when needed.

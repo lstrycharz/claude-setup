@@ -1,6 +1,15 @@
+---
+# Code files and stack manifests — every language the floor (verify.sh,
+# dispatch.mjs MANIFESTS) knows about, plus notebooks for analysis work.
+paths:
+  - "**/*.{py,ipynb,ts,tsx,js,jsx,mjs,cjs,sh,sql,go,rs,java,kt,rb}"
+  - "**/{package.json,pyproject.toml,setup.py,go.mod,Cargo.toml,pom.xml,build.gradle,build.gradle.kts}"
+---
 # QA — Red/Green TDD (Strict)
 
-**Every code change follows the Red-Green-Refactor cycle. No exceptions.**
+**Every change to code that ships or runs repeatedly (apps, agents, pipelines, scheduled scripts) follows the Red-Green-Refactor cycle.**
+
+One-off analysis scripts (a pandas pass over an ad-platform export, a chart for a dashboard) are exempt from TDD, because the test that matters there is whether the output reconciles with the source data. For those, prove the numbers instead: totals match the export, row counts match, and every published figure is recomputed by a check script, not eyeballed.
 
 ## The Cycle
 
@@ -23,7 +32,7 @@ Then go back to RED for the next behavior.
 
 ## Rules
 
-- **No implementation without a failing test first.** This includes bug fixes, new features, and refactors that change behavior.
+- **No implementation without a failing test first** (outside the one-off exemption above). This includes bug fixes, new features, and refactors that change behavior.
 - **Run tests after every step.** Red must be red. Green must be green. Refactor must stay green.
 - **One behavior per cycle.** If a task requires multiple behaviors, break it into multiple red-green-refactor loops.
 - **Test names describe behavior**, not implementation. Prefer `rejects_expired_tokens` over `test_check_function`.
@@ -47,7 +56,7 @@ Then go back to RED for the next behavior.
 
 ## Missing test framework is a blocking condition
 
-If you **cannot write the failing test** because the project has no working test framework (none configured, or the existing one is broken), **stop.** Do not silently proceed to write implementation code.
+If you **cannot write the failing test** (for code the cycle applies to) because the project has no working test framework (none configured, or the existing one is broken), **stop.** Do not silently proceed to write implementation code.
 
 - Tell the user the coverage gap explicitly, *before* writing the code — name which behaviors will ship unverified.
 - Get an explicit decision: fix/add the framework first, or have the user consciously accept the gap.
