@@ -1,14 +1,22 @@
+---
+# Code files and stack manifests — every language the floor (verify.sh,
+# dispatch.mjs MANIFESTS) knows about, plus notebooks for analysis work.
+paths:
+  - "**/*.{py,ipynb,ts,tsx,js,jsx,mjs,cjs,sh,sql,go,rs,java,kt,rb}"
+  - "**/{package.json,pyproject.toml,setup.py,go.mod,Cargo.toml,pom.xml,build.gradle,build.gradle.kts}"
+---
 # Workflow & Task Management
 
-## Planning
-- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
-- If something goes sideways, STOP and re-plan immediately — don't keep pushing
-- Use plan mode for verification steps, not just building
-- Write detailed specs upfront to reduce ambiguity
+## Brief before building
+Every non-trivial task starts from three things: the task, the guardrails (what must not change, what not to touch), and what done looks like. With those, work it out and show results; don't stop for plan approval.
 
-## Define Done Before Starting
+Use plan mode only when the approach is genuinely uncertain, the change spans several files or systems, or the code is unfamiliar. Skip it when the change fits in one sentence. Plan mode adds a round-trip, and a clear done-condition prevents more drift than a plan does.
 
-Before writing any code on a non-trivial task, write down what "done" looks like. This applies in **both pair and delegation modes** — not just delegation.
+If something goes sideways, stop and re-plan rather than pushing through.
+
+## Define done before starting
+
+Before writing any code on a non-trivial task, write down what "done" looks like.
 
 Format:
 
@@ -27,49 +35,13 @@ Rules:
 
 This is the single highest-leverage discipline against scope drift. Writing the done-condition before coding catches more wasted work than any prompt change.
 
-## CLAUDE.md Auto-Population
+Turn the done-list into a check Claude can run (a test, a script, a command whose output passes or fails). A runnable check lets the work loop until it passes; a prose check needs a human. For a long autonomous run, write the goal the same way before starting: one measurable end state, the command that proves it, and what must not change.
 
-After the **first planning session** in a new project, check if `.claude/CLAUDE.md` has empty placeholder sections (Tech Stack, Commands, Project Structure, Rules). If it does:
+## CLAUDE.md auto-population
+After the first session in a new project, fill any empty placeholder sections in `.claude/CLAUDE.md` (Tech Stack, Commands, Project Structure, Rules) from what was decided, show the user, and commit it. After that it is a living document: keep it an index of what is always true, and point to other files by path with when to read them, rather than importing them.
 
-1. **Populate** the empty sections based on decisions made during planning:
-   - **Tech Stack** — language, framework, database, frontend, infra, package managers
-   - **Commands** — dev, build, test, lint, type check, migrations (whatever applies)
-   - **Project Structure** — directory layout with one-line descriptions
-   - **Rules** — project-specific rules only (not duplicating global rules)
-   - **Session Start** — the actual test commands to run
-2. **Show the user** what was written and confirm it's correct
-3. **Commit** the populated CLAUDE.md as a save point
-
-This only happens once per project. After that, CLAUDE.md is a living document — update it when the project evolves (new dependencies, changed structure, new gotchas).
-
-## Collaboration Modes
-
-Choose the mode based on task clarity. Default to pair mode when uncertain.
-
-| Mode | When | How | Review |
-|------|------|-----|--------|
-| **Pair Mode** | Ambiguous problems, design decisions, learning new domains, security/infra changes | Interactive back-and-forth; AI as thought partner | Line-by-line as you go |
-| **Delegation Mode** | Well-scoped tasks with clear acceptance criteria | Structured prompt → autonomous execution → human review | Deliverable review against spec |
-
-**Pair Mode** — use for:
-- Exploratory work where the path isn't clear
-- Architecture and design decisions
-- Security-sensitive or infrastructure changes
-- Anything touching auth, payments, or PII
-
-**Delegation Mode** — use for:
-- Well-defined features with testable acceptance criteria
-- Bug fixes with clear reproduction steps
-- Refactors where behavior must be preserved
-- Tasks where you can verify the output against a spec
-
-**Operating model:** "Delegate, review, own." Well-scoped delegation with clear acceptance criteria is not blind trust — it's a higher-leverage operating mode. You own the output regardless of mode.
-
-## Subagent Strategy
-- Use subagents liberally to keep main context window clean
-- Offload research, exploration, and parallel analysis to subagents
-- For complex problems, throw more compute at it via subagents
-- One task per subagent for focused execution
+## Subagents
+Use subagents for wide searches, research that would flood the main context, and genuinely independent parallel work. Don't spawn them for small tasks, because each one multiplies cost and time.
 
 ## Chunked Implementation
 
@@ -130,38 +102,6 @@ Rules:
 - Update `.claude/PROGRESS.md` when criteria are completed
 - If a criterion turns out to be wrong, discuss with the user before modifying
 
-## Delegation Template
-
-When handing off a well-scoped task (delegation mode), structure the prompt:
-
-```
-## Task
-[One-sentence description of what to build/fix/refactor]
-
-## Context
-- Relevant files: [list specific files to read]
-- Related patterns: [point to existing code to match]
-
-## Acceptance Criteria
-1. [Specific, testable criterion]
-2. [Specific, testable criterion]
-3. [Specific, testable criterion]
-
-## Constraints
-- Follow existing patterns in [file/directory]
-- Do not modify [protected areas]
-- All tests must pass before marking complete
-
-## Out of Scope
-- [Explicitly list what NOT to do]
-```
-
-**Pre-delegation checklist:**
-- [ ] Task has a clear, bounded scope (one feature, one fix, one refactor)
-- [ ] Acceptance criteria are explicit and testable
-- [ ] No security-sensitive changes (auth, payments, PII) — those stay in pair mode
-- [ ] You can verify the deliverable against the spec
-
 ## Self-Improvement Loop
 - After ANY correction from the user: update `tasks/lessons.md` with the pattern
 - Write rules for yourself that prevent the same mistake
@@ -182,7 +122,7 @@ Same discipline applies to hooks and tools: every component should have a named 
 ## Verification Before Done
 - Never mark a task complete without proving it works
 - Diff behavior between main and your changes when relevant
-- Ask yourself: "Would a staff engineer approve this?"
+- Never let the session that wrote the work be its only judge: use a test, a check script, or — for code, and mandatory per the chunk loop above — the fresh-context `code-reviewer` agent
 - Run tests, check logs, demonstrate correctness
 - **For user-facing features**: verify the feature works end-to-end as a user would experience it (browser preview, CLI output, API response — whatever applies)
 
@@ -193,15 +133,9 @@ Same discipline applies to hooks and tools: every component should have a named 
 | Single file fix | Diff review + affected tests pass |
 | Feature implementation | Spec review + full test pass + **E2E verification** + code review |
 | Multi-service change | Integration tests + **E2E verification** + manual QA + spec review |
-| Infrastructure / security | Pair mode only — never fully delegate |
+| Infrastructure / security | Interactive with the user, line by line — never fully autonomous |
 
 **E2E verification means:** run the app, hit the feature as a user would, confirm it works. For web apps, use browser preview or Playwright. For APIs, make actual HTTP requests. For CLIs, run the command. "Tests pass" and "it actually works" are different claims — verify both.
-
-## Elegance Check
-- For non-trivial changes: pause and ask "is there a more elegant way?"
-- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
-- Skip this for simple, obvious fixes — don't over-engineer
-- Challenge your own work before presenting it
 
 ## Surgical Changes
 
@@ -232,22 +166,14 @@ Skip this discipline only when the task is explicitly a refactor or cleanup — 
 
 ## Recovery from Failures
 
-When a task goes off-track — whether in pair or delegation mode:
+When a task goes off-track:
 
 1. **Stop** — don't let errors compound. Revert to last checkpoint (`git stash` or `git reset` to last good commit)
 2. **Diagnose** — was the spec ambiguous? Was context missing? Was the task too broad?
 3. **Adjust** — tighten the spec, add missing context, break into smaller pieces
-4. **Re-attempt** — re-delegate with the improved spec, or switch to pair mode if the task proved too ambiguous
+4. **Re-attempt** — with the improved spec; if the task proved too ambiguous, work it interactively with the user instead
 
 Never push through a failing approach hoping it will work out. The cost of stopping and re-planning is always lower than compounding errors.
-
-## Task Tracking
-1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
-2. **Verify Plan**: Check in before starting implementation
-3. **Track Progress**: Mark items complete as you go
-4. **Explain Changes**: High-level summary at each step
-5. **Document Results**: Add review section to `tasks/todo.md`
-6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
 
 ## Session Continuity
 
@@ -255,7 +181,7 @@ Maintain `.claude/PROGRESS.md` as the cross-session handoff document. This file 
 
 **Update PROGRESS.md when:**
 - Completing a feature or significant chunk of work
-- Before running `/compact`
+- Before running `/compact` (and give it a focus, e.g. `/compact keep the done-list and open blockers`)
 - Before ending a session
 - When discovering a blocker or regression
 
@@ -266,13 +192,13 @@ Maintain `.claude/PROGRESS.md` as the cross-session handoff document. This file 
 - **Next Up** — prioritized queue of remaining work
 - **Known Issues** — bugs or regressions found during this session
 
-This is NOT a replacement for `tasks/todo.md` (which tracks granular steps within a session). PROGRESS.md is the high-level state that survives across sessions.
+PROGRESS.md is the high-level state that survives across sessions; in-session steps live in Claude's own task list.
 
 **Session resume protocol (when PROGRESS.md exists):**
 1. Read `.claude/PROGRESS.md`
 2. Run `git log --oneline -10`
 3. Run the test suite
-4. Check `tasks/todo.md` and `tasks/lessons.md`
+4. Check `tasks/lessons.md` if it exists
 5. Select highest-priority incomplete work from PROGRESS.md
 6. Start coding — do not redo completed work
 
@@ -284,14 +210,3 @@ Treat commits as **save points**. Commit after every successful chunk, not at th
 - Use descriptive messages that explain *why*, not just *what*
 - Never batch multiple unrelated changes into one commit
 - Benefits: easy rollback if AI suggestions introduce bugs, clear development progression, safe experimentation
-
-## Anti-Patterns
-
-Avoid these — they consistently produce poor outcomes:
-
-- **Monolithic requests** — "Build me the entire feature" with no decomposition
-- **Blind trust** — accepting AI output without review or testing
-- **Context starvation** — not providing enough information about the codebase, patterns, or constraints
-- **Big commits** — waiting until everything is done to commit
-- **Skipping tests** — "it looks right" is not verification
-- **Pushing through failures** — continuing down a broken path instead of stopping and re-planning

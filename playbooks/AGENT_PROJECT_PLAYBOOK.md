@@ -13,7 +13,7 @@ to see what it looks like in production code, open the linked file there.
 
 ## How to use this
 
-Walk this document **in plan mode at project kickoff**, in order. Decide
+Walk this document **at project kickoff**, in order. Decide
 which layers apply (most projects: 1; many: 1+2; few: 1+2+3). Mark the
 non-applicable sections "n/a, because …" — that recorded reasoning is
 itself useful when scope changes later.
@@ -489,14 +489,14 @@ projects:
 
 ---
 
-# Using this in plan mode
+# Using this at kickoff
 
 At project kickoff:
 
 1. Read this document end-to-end.
 2. Decide which layers apply. Record the "n/a, because…" reasons for any
    you skip.
-3. Write the plan (e.g. `tasks/todo.md` per the workflow rules) as
+3. Write the done-list and the first vertical slice (per the workflow rules) as
    **vertical slices, not horizontal layers**. The first chunk should be a
    tracer bullet through every applicable layer end-to-end (one stage +
    one eval + one regression case + one CI run).

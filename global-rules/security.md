@@ -1,3 +1,13 @@
+---
+# Code files and stack manifests — every language the floor (verify.sh,
+# dispatch.mjs MANIFESTS) knows about, plus notebooks, CI workflows and
+# Dockerfiles (secrets and unpinned installs live there too).
+paths:
+  - "**/*.{py,ipynb,ts,tsx,js,jsx,mjs,cjs,sh,sql,go,rs,java,kt,rb}"
+  - "**/{package.json,pyproject.toml,setup.py,go.mod,Cargo.toml,pom.xml,build.gradle,build.gradle.kts}"
+  - ".github/workflows/*.{yml,yaml}"
+  - "**/Dockerfile"
+---
 # Security & Code Safety
 
 ## When to apply this rule

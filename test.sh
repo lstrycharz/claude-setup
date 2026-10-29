@@ -62,6 +62,27 @@ section "Fresh install"
 [ -f "$SANDBOX/.claude/rules/agent-design.md" ] && pass "rules/agent-design.md installed" || fail "rules/agent-design.md missing"
 [ -f "$SANDBOX/.claude/rules/frontend/react.md" ] && pass "rules/frontend/react.md installed" || fail "rules/frontend/react.md missing"
 [ -f "$SANDBOX/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md" ] && pass "playbooks/AGENT_PROJECT_PLAYBOOK.md installed" || fail "playbooks/AGENT_PROJECT_PLAYBOOK.md missing"
+# Every global rule is path-scoped: unscoped, all ~730 lines of coding rules
+# loaded into every session (ads analysis, research…) and diluted the actual
+# instructions. The frontmatter is the documented `paths:` syntax; it must be
+# the first thing in the file or Claude Code treats it as body text.
+for r in workflow qa testing code-style security agent-design frontend/react; do
+  f="$SANDBOX/.claude/rules/$r.md"
+  # Unparseable YAML silently makes a rule unscoped, so: opens on line 1,
+  # closes within 20 lines, and lists at least one real pattern.
+  fm=$(sed -n '2,20p' "$f" | sed '/^---$/q')
+  [ "$(head -1 "$f")" = "---" ] && echo "$fm" | grep -qx -- "---" && echo "$fm" | grep -q "^paths:" && echo "$fm" | grep -qE '^\s*-\s*"' \
+    && pass "rules/$r.md is path-scoped (paths: frontmatter)" || fail "rules/$r.md is unscoped — loads into every session"
+done
+[ -f "$SANDBOX/.claude/playbooks/COLLABORATION_PLAYBOOK.md" ] && pass "playbooks/COLLABORATION_PLAYBOOK.md installed (pull-loaded, not a rule)" || fail "COLLABORATION_PLAYBOOK.md not installed"
+grep -q "COLLABORATION_PLAYBOOK" "$SCRIPT_DIR/uninstall.sh" && pass "uninstall.sh knows the collaboration playbook" || fail "uninstall.sh would leave COLLABORATION_PLAYBOOK.md behind"
+for c in deepen red-team; do
+  [ -f "$SCRIPT_DIR/commands/$c.md" ] && grep -q "^description:" "$SCRIPT_DIR/commands/$c.md" && pass "plugin ships /$c command" || fail "commands/$c.md missing or has no description"
+done
+# The TDD rule exempts one-off analysis scripts, but replaces it with a check:
+# the numbers must reconcile with the source data via a script, not by eye.
+grep -qi "exempt from TDD" "$SANDBOX/.claude/rules/qa.md" && grep -qi "check script" "$SANDBOX/.claude/rules/qa.md" \
+  && pass "qa.md: one-off analysis is exempt from TDD but must reconcile via a check script" || fail "qa.md: no analysis-script exemption, or exemption with no replacement check"
 [ -f "$SCRIPT_DIR/hooks/dispatch.mjs" ] && pass "plugin ships hooks/dispatch.mjs" || fail "hooks/dispatch.mjs missing from plugin"
 [ -f "$SCRIPT_DIR/commands/init-floor.md" ] && pass "plugin ships /init-floor command" || fail "commands/init-floor.md missing"
 [ -f "$SCRIPT_DIR/commands/update-floor.md" ] && pass "plugin ships /update-floor command" || fail "commands/update-floor.md missing"
@@ -1431,6 +1452,7 @@ echo "n" | "$SCRIPT_DIR/uninstall.sh" > "$LOGS"/uninstall.log 2>&1 || fail "unin
 [ ! -f "$SANDBOX/.claude/rules/workflow.md" ] && pass "uninstall removed rules/workflow.md" || fail "uninstall left rules/workflow.md"
 [ ! -f "$SANDBOX/.claude/rules/agent-design.md" ] && pass "uninstall removed rules/agent-design.md" || fail "uninstall left rules/agent-design.md"
 [ ! -f "$SANDBOX/.claude/playbooks/AGENT_PROJECT_PLAYBOOK.md" ] && pass "uninstall removed the playbook" || fail "uninstall left the playbook"
+[ ! -f "$SANDBOX/.claude/playbooks/COLLABORATION_PLAYBOOK.md" ] && pass "uninstall removed the collaboration playbook" || fail "uninstall left COLLABORATION_PLAYBOOK.md"
 [ ! -f "$SANDBOX/bin/init-claude" ] && pass "uninstall removed legacy bin/init-claude" || fail "uninstall left legacy bin/init-claude"
 [ ! -f "$SANDBOX/bin/update-claude" ] && pass "uninstall removed legacy bin/update-claude" || fail "uninstall left legacy bin/update-claude"
 

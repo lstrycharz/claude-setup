@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — install the GLOBAL RULES and playbooks (the always-loaded part).
+# install.sh — install the GLOBAL RULES and playbooks (the part plugins don't cover).
 #
 # Everything else — hooks, slash commands, agents, and the project template —
 # ships as a Claude Code PLUGIN (#13). Plugins are versioned, install/update/
@@ -8,8 +8,10 @@
 #   /plugin marketplace add lstrycharz/claude-setup
 #   /plugin install claude-setup@claude-setup
 #
-# Global rules are the one thing plugins don't cover (they are auto-loaded into
-# every session from ~/.claude/rules), so this script still copies those.
+# Global rules are the one thing plugins don't cover (Claude Code loads them
+# from ~/.claude/rules — path-scoped, so only when Claude touches code files
+# under the directory it was started in),
+# so this script still copies those.
 #
 # Usage: git clone <repo> && cd claude-setup && ./install.sh
 
@@ -78,7 +80,7 @@ fi
 echo ""
 echo "✅ Done! Installed:"
 echo ""
-echo "   ~/.claude/rules/        → Global rules (auto-loaded in every project)"
+echo "   ~/.claude/rules/        → Global rules (load when Claude touches code files under the start directory)"
 echo "   ~/.claude/playbooks/    → Long-form references (pulled when needed)"
 echo ""
 echo "Everything else is the PLUGIN (hooks, /code-review, /init-floor, agents,"

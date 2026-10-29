@@ -1,3 +1,8 @@
+---
+paths:
+  - "**/*.tsx"
+  - "**/*.jsx"
+---
 # Frontend / React Rules
 
 ## Components

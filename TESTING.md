@@ -17,7 +17,7 @@ Runs 160+ assertions in a sandboxed `HOME` directory. Your real `~/.claude/` is 
 
 Exits 0 if all pass, 1 if any fail. Run it after any change to `install.sh`, `uninstall.sh`, `bin/`, `hooks/`, or the template.
 
-It covers: the fresh install, the plugin's shape (manifest, hooks.json wiring, the five commands, both agents), every hook path in `dispatch.mjs` (config protection, no-verify bypasses, floor enforcement, the commit watchdog), `verify.sh`'s tiers and its no-test-floor hard fail, `init-claude` / `update-claude`, and the uninstall — including the legacy pre-plugin cleanup.
+It covers: the fresh install, the plugin's shape (manifest, hooks.json wiring, the seven commands, both agents), every hook path in `dispatch.mjs` (config protection, no-verify bypasses, floor enforcement, the commit watchdog), `verify.sh`'s tiers and its no-test-floor hard fail, `init-claude` / `update-claude`, and the uninstall — including the legacy pre-plugin cleanup.
 
 **Requires:** Node.js 18+ (standard on most dev machines).
 
