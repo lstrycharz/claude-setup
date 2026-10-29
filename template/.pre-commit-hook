@@ -35,12 +35,22 @@ if [ -f ".claude/verify.sh" ]; then
   for d in node_modules .venv venv; do
     [ -e "$REPO_ROOT/$d" ] && ln -s "$REPO_ROOT/$d" "$TMP/$d"
   done
-  ( cd "$TMP" && bash "$REPO_ROOT/.claude/verify.sh" --quick )
+  # A borrowed .venv (or venv/) is the project's REAL environment: `uv run` would sync it
+  # from the snapshot, reinstalling the project's editable package pointed at
+  # $TMP, which is deleted after the commit, so every console script breaks.
+  # Use the env read-only; the full floor (pre-push / CI) runs in the real repo.
+  # Export only when borrowed: uv rejects an empty UV_NO_SYNC ("boolish value").
+  (
+    cd "$TMP" || exit 1
+    { [ -e "$REPO_ROOT/.venv" ] || [ -e "$REPO_ROOT/venv" ]; } && export UV_NO_SYNC=1
+    bash "$REPO_ROOT/.claude/verify.sh" --quick
+  )
   if [ $? -ne 0 ]; then
     echo ""
     echo "❌ quick floor failed on the staged snapshot — commit blocked."
     echo "   Fix lint/typecheck in the STAGED files; don't bypass."
     echo "   (Tests run at push time — this gate is lint + typecheck only.)"
+    echo "   (Changed uv.lock? Run 'uv sync' in the repo first — this gate never syncs.)"
     exit 1
   fi
 fi

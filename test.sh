@@ -638,6 +638,62 @@ run_verify "$R"; rc=$?
 [ "$rc" -eq 0 ] && pass "verify: unsupported stack can be accepted via allow-no-tests marker" || fail "verify: opt-out marker did not pass an unsupported stack"
 
 # ============================================================
+# SECTION: pre-commit snapshot must not touch the project's real venv
+# ============================================================
+# The pre-commit hook verifies a temp checkout of the index and symlinks the
+# repo's .venv into it. A plain `uv run` there SYNCS: for a project with a
+# [build-system] it reinstalls the project's editable package into the REAL
+# .venv pointing at the temp dir, which is deleted after the commit, so every
+# console script breaks ("bad interpreter: /var/folders/.../tmp.X/.venv/...").
+# The hook must tell uv not to sync when it borrowed the real venv.
+section "pre-commit leaves the project venv alone"
+
+# uv shim that records whether syncing was disabled for each call.
+mkshim_uv_env() {
+  cat > "$SHIMDIR/uv" <<EOF
+#!/bin/bash
+echo "UV_NO_SYNC=\${UV_NO_SYNC-<unset>} uv \$*" >> "$SHIMLOG"
+exit 0
+EOF
+  chmod +x "$SHIMDIR/uv"
+}
+mkrepo_uv() { # $1=dir, $2="venv" to give it a real-looking .venv
+  mkdir -p "$1" && git -C "$1" init -q
+  printf '[project]\nname = "x"\n' > "$1/pyproject.toml"; touch "$1/uv.lock"
+  [ "${2:-}" = venv ] && mkdir -p "$1/.venv/bin"
+  [ "${2:-}" = plainvenv ] && mkdir -p "$1/venv/bin"   # UV_PROJECT_ENVIRONMENT=venv
+  mkdir -p "$1/.claude" && cp "$VERIFY" "$1/.claude/verify.sh"
+  cp "$SCRIPT_DIR/template/.pre-commit-hook" "$1/.git/hooks/pre-commit"
+  git -C "$1" add pyproject.toml uv.lock
+}
+run_precommit() { # $1=repo; gitleaks hidden so only the floor step runs; the
+  # runner's own UV_NO_SYNC is dropped so it can't fake a pass or a failure.
+  ( cd "$1" && env -u UV_NO_SYNC PATH="$SHIMDIR:$(dirname "$(command -v git)"):/usr/bin:/bin" bash .git/hooks/pre-commit >/dev/null 2>&1 )
+}
+
+reset_shims; mkshim_uv_env
+R="$SANDBOX/pc-venv"; mkrepo_uv "$R" venv
+run_precommit "$R"
+grep -q '^UV_NO_SYNC=1 uv run' "$SHIMLOG" \
+  && pass "pre-commit: uv runs without syncing when the real .venv is borrowed" \
+  || fail "pre-commit: uv may sync the borrowed .venv and re-point the editable install at the temp snapshot"
+
+reset_shims; mkshim_uv_env
+R="$SANDBOX/pc-plainvenv"; mkrepo_uv "$R" plainvenv
+run_precommit "$R"
+grep -q '^UV_NO_SYNC=1 uv run' "$SHIMLOG" \
+  && pass "pre-commit: a borrowed venv/ (no dot) is protected from syncing too" \
+  || fail "pre-commit: uv may sync a borrowed venv/ and re-point the editable install at the temp snapshot"
+
+reset_shims; mkshim_uv_env
+R="$SANDBOX/pc-novenv"; mkrepo_uv "$R"
+run_precommit "$R"
+# Unset, not empty: real uv rejects UV_NO_SYNC="" ("expected a boolish value").
+grep -q '^UV_NO_SYNC=<unset> uv run' "$SHIMLOG" \
+  && pass "pre-commit: with no .venv to borrow, UV_NO_SYNC stays unset (uv may sync the throwaway snapshot)" \
+  || fail "pre-commit: UV_NO_SYNC was set (or set empty, which uv rejects) with no borrowed .venv"
+
+# ============================================================
 # SECTION: canaries — prove the tools are ENFORCING, not just exiting 0
 # ============================================================
 # A check that exits 0 because it checked nothing is indistinguishable from a
